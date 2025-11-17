@@ -1,0 +1,2 @@
+# Ziplor
+Idea about trading
