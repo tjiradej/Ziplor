@@ -1,0 +1,41 @@
+# Compiled files
+*.ex4
+*.ex5
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Build artifacts
+/tmp/
+/build/
+
+# Test files
+/test/
+*.tester
+
+# Backup files
+*.bak
+*.backup
+
+# MetaTrader files
+*.hst
+*.fxh
+*.mqproj
+MQL4/Include/
+MQL5/Include/
+MQL4/Libraries/
+MQL5/Libraries/
