@@ -118,7 +118,7 @@ bool CSwingDetector::IsSwingLow(int bar)
 //+------------------------------------------------------------------+
 //| Find recent swing highs                                          |
 //+------------------------------------------------------------------+
-bool CSwingDetector::FindSwingHighs(SwingPoint &highs[], int maxPoints, int startBar = 1)
+bool CSwingDetector::FindSwingHighs(SwingPoint &highs[], int maxPoints, int startBar)
 {
    ArrayResize(highs, 0);
    int found = 0;
@@ -149,7 +149,7 @@ bool CSwingDetector::FindSwingHighs(SwingPoint &highs[], int maxPoints, int star
 //+------------------------------------------------------------------+
 //| Find recent swing lows                                           |
 //+------------------------------------------------------------------+
-bool CSwingDetector::FindSwingLows(SwingPoint &lows[], int maxPoints, int startBar = 1)
+bool CSwingDetector::FindSwingLows(SwingPoint &lows[], int maxPoints, int startBar)
 {
    ArrayResize(lows, 0);
    int found = 0;
@@ -180,7 +180,7 @@ bool CSwingDetector::FindSwingLows(SwingPoint &lows[], int maxPoints, int startB
 //+------------------------------------------------------------------+
 //| Determine trend using Dow Theory (HH/HL = up, LL/LH = down)     |
 //+------------------------------------------------------------------+
-ENUM_DOW_TREND CSwingDetector::DetermineTrend(int maxSwingPoints = 4)
+ENUM_DOW_TREND CSwingDetector::DetermineTrend(int maxSwingPoints)
 {
    SwingPoint highs[];
    SwingPoint lows[];
