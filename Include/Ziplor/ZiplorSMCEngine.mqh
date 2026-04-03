@@ -878,7 +878,20 @@ TradeSignal CSMCEngine::EvaluateSignal(MarketStructure &htf, MarketStructure &mt
       //--- Entry at ask, SL below last LTF swing low, TP at nearest sell-side liquidity
       signal.entry_price = ask;
       signal.stop_loss = ltf.last_swing_low.price - spread - point * 5;
+
+      //--- Validate SL is below entry for BUY
+      if(signal.stop_loss >= signal.entry_price)
+        {
+         signal.valid = false;
+         return signal;
+        }
+
       double sl_distance = signal.entry_price - signal.stop_loss;
+      if(sl_distance < point * 10) // Minimum 10 points SL distance
+        {
+         signal.valid = false;
+         return signal;
+        }
 
       //--- Find nearest buy-side liquidity pool for TP
       double best_tp = signal.entry_price + sl_distance * 3.0; // Default 3:1 RR
@@ -908,7 +921,20 @@ TradeSignal CSMCEngine::EvaluateSignal(MarketStructure &htf, MarketStructure &mt
 
       signal.entry_price = bid;
       signal.stop_loss = ltf.last_swing_high.price + spread + point * 5;
+
+      //--- Validate SL is above entry for SELL
+      if(signal.stop_loss <= signal.entry_price)
+        {
+         signal.valid = false;
+         return signal;
+        }
+
       double sl_distance = signal.stop_loss - signal.entry_price;
+      if(sl_distance < point * 10) // Minimum 10 points SL distance
+        {
+         signal.valid = false;
+         return signal;
+        }
 
       double best_tp = signal.entry_price - sl_distance * 3.0;
       for(int i = 0; i < m_liquidity_count; i++)
@@ -933,6 +959,18 @@ TradeSignal CSMCEngine::EvaluateSignal(MarketStructure &htf, MarketStructure &mt
    //--- Determine signal quality
    if(signal.direction != BIAS_NONE)
      {
+      //--- Final TP sanity check
+      if(signal.direction == BIAS_BULLISH && signal.take_profit <= signal.entry_price)
+        {
+         signal.valid = false;
+         return signal;
+        }
+      if(signal.direction == BIAS_BEARISH && signal.take_profit >= signal.entry_price)
+        {
+         signal.valid = false;
+         return signal;
+        }
+
       if(signal.confluence_count >= 6)
          signal.quality = SIGNAL_HIGH;
       else if(signal.confluence_count >= 5)

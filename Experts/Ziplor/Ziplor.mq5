@@ -209,8 +209,30 @@ int OnInit()
    g_am_state.total_wins = 0;
    g_am_state.total_losses = 0;
 
+   //--- Initialize current signal to safe defaults
+   g_current_signal.direction = BIAS_NONE;
+   g_current_signal.quality = SIGNAL_NONE;
+   g_current_signal.entry_price = 0;
+   g_current_signal.stop_loss = 0;
+   g_current_signal.take_profit = 0;
+   g_current_signal.risk_reward = 0;
+   g_current_signal.reason = "";
+   g_current_signal.signal_time = 0;
+   g_current_signal.valid = false;
+   g_current_signal.confluence_count = 0;
+
    //--- Initialize pyramid array
    ArrayResize(g_pyramids, InpMaxPyramidLevels + 1);
+   for(int i = 0; i <= InpMaxPyramidLevels; i++)
+     {
+      g_pyramids[i].ticket = 0;
+      g_pyramids[i].level = PYRAMID_BASE;
+      g_pyramids[i].lot_size = 0;
+      g_pyramids[i].entry_price = 0;
+      g_pyramids[i].stop_loss = 0;
+      g_pyramids[i].entry_time = 0;
+      g_pyramids[i].active = false;
+     }
    g_pyramid_count = 0;
 
    //--- Initialize recovery state
@@ -227,6 +249,9 @@ int OnInit()
    g_weekly_start_balance = g_account.Balance();
    g_last_daily_reset = TimeCurrent();
    g_last_weekly_reset = TimeCurrent();
+
+   //--- Initialize last bar time to prevent false signal on first tick
+   g_last_bar_time = iTime(_Symbol, PERIOD_M1, 0);
 
    //--- Timer for dashboard updates (every second)
    if(InpShowDashboard)
@@ -272,11 +297,6 @@ void OnTick()
    //--- Daily/weekly P&L reset check
    CheckDailyWeeklyReset();
 
-   //--- Check spread
-   double spread_points = g_symbol_info.Spread();
-   if(spread_points > InpMaxSpreadPoints)
-      return; // Spread too wide
-
    //--- Determine current session/killzone
    g_current_session = DetectSession();
 
@@ -290,11 +310,20 @@ void OnTick()
    g_smc.FindZones(InpLTF);
    g_smc.FindLiquidityPools(InpLTF);
 
-   //--- Check existing positions for pyramid adds and trail SL
+   //--- Always manage existing positions (trail SL, pyramids) regardless of spread
    ManageOpenPositions();
 
-   //--- Check recovery mode
+   //--- Always check recovery mode
    CheckRecoveryMode();
+
+   //--- Check spread - only block NEW entries, not position management
+   double spread_points = g_symbol_info.Spread();
+   if(spread_points > InpMaxSpreadPoints)
+      return; // Spread too wide for new entries
+
+   //--- Check if market is open for trading
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_FULL)
+      return;
 
    //--- Evaluate new trade signal
    g_current_signal = g_smc.EvaluateSignal(g_htf_structure, g_mtf_structure,
@@ -487,13 +516,21 @@ double CalculateLotSize(double entry_price, double stop_loss)
    double risk_amount = account_equity * risk_pct / 100.0;
 
    double sl_distance = MathAbs(entry_price - stop_loss);
-   if(sl_distance <= 0)
+   double point = g_symbol_info.Point();
+   double min_sl_distance = point * 10; // Minimum 10 points SL distance
+   if(sl_distance < min_sl_distance)
+     {
+      Print("WARNING: SL distance too small: ", sl_distance, " min=", min_sl_distance);
       return InpMinLotSize;
+     }
 
    double tick_value = g_symbol_info.TickValue();
    double tick_size = g_symbol_info.TickSize();
    if(tick_value <= 0 || tick_size <= 0)
+     {
+      Print("ERROR: Invalid tick value=", tick_value, " or tick size=", tick_size, " for ", _Symbol);
       return InpMinLotSize;
+     }
 
    double lot_size = risk_amount / (sl_distance / tick_size * tick_value);
 
@@ -534,7 +571,7 @@ void ExecuteBaseEntry(const TradeSignal &signal)
       Print("Failed to calculate margin requirement");
       return;
      }
-   if(margin_required > g_account.FreeMargin() * 0.8) // Keep 20% margin buffer
+   if(margin_required > g_account.FreeMargin() * 0.5) // Keep 50% margin buffer for safety
      {
       Print("Insufficient margin. Required: ", margin_required, " Free: ", g_account.FreeMargin());
       return;
@@ -595,6 +632,9 @@ void ManageOpenPositions()
       return;
      }
 
+   //--- Check for stale positions (open > 24 hours without progress)
+   CheckPositionTimeout();
+
    //--- Check for pyramid opportunities
    if(InpEnablePyramid && g_pyramid_count > 0 && g_pyramid_count <= InpMaxPyramidLevels)
      {
@@ -605,6 +645,31 @@ void ManageOpenPositions()
    if(InpTrailOnPyramid && g_pyramid_count > 1)
      {
       TrailStopLoss();
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Check for position timeout - close stale positions               |
+//+------------------------------------------------------------------+
+void CheckPositionTimeout()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(!g_position.SelectByIndex(i))
+         continue;
+      if(g_position.Symbol() != _Symbol || g_position.Magic() != InpMagicNumber)
+         continue;
+
+      datetime entry_time = (datetime)g_position.Time();
+      long seconds_open = (long)(TimeCurrent() - entry_time);
+
+      //--- Close positions open > 48 hours (2 full trading days)
+      if(seconds_open > 48 * 3600)
+        {
+         Print("TIMEOUT: Closing position Ticket=", g_position.Ticket(),
+               " open for ", seconds_open / 3600, " hours");
+         g_trade.PositionClose(g_position.Ticket());
+        }
      }
   }
 
@@ -884,11 +949,30 @@ void CheckRecoveryMode()
      }
    else if(g_recovery.state == RECOVERY_WATCHING)
      {
+      //--- Time limit: cancel recovery after 7 days
+      if(TimeCurrent() - g_recovery.recovery_start > 7 * 24 * 3600)
+        {
+         Print("RECOVERY TIMEOUT: 7 days elapsed without recovery completion");
+         g_recovery.state = RECOVERY_OFF;
+         g_am_state.current_risk_pct = g_am_state.base_risk_pct;
+         return;
+        }
+
       //--- Looking for high-quality entry for recovery
       if(g_current_signal.valid && g_current_signal.quality >= SIGNAL_HIGH)
         {
          g_recovery.state = RECOVERY_ACTIVE;
          Print("Recovery: Found HIGH quality signal, entering recovery trade");
+        }
+     }
+   else if(g_recovery.state == RECOVERY_ACTIVE)
+     {
+      //--- Time limit also applies to active recovery
+      if(TimeCurrent() - g_recovery.recovery_start > 7 * 24 * 3600)
+        {
+         Print("RECOVERY TIMEOUT: 7 days elapsed, reverting to normal mode");
+         g_recovery.state = RECOVERY_OFF;
+         g_am_state.current_risk_pct = g_am_state.base_risk_pct;
         }
      }
   }
@@ -1006,7 +1090,7 @@ void UpdateDashboard()
    data.total_trades = g_stat_total_trades;
    data.win_rate = (g_stat_total_trades > 0) ?
                     (double)g_stat_wins / g_stat_total_trades * 100.0 : 0;
-   data.avg_rr = (g_stat_wins > 0 && g_total_loss > 0) ?
+   data.avg_rr = (g_stat_wins > 0 && g_stat_losses > 0 && g_total_loss > 0) ?
                   (g_total_profit / g_stat_wins) / (g_total_loss / g_stat_losses) : 0;
 
    g_dashboard.Update(data);
