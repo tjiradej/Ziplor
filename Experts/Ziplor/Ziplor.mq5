@@ -85,6 +85,8 @@ input bool             InpEnableRecovery   = true;                              
 input double           InpRecoveryThreshold = 3.0;                             // Recovery Trigger (% drawdown)
 input int              InpMaxRecoveryTrades = 5;                                // Max Recovery Trades
 input double           InpRecoveryRiskMult = 1.5;                               // Recovery Risk Multiplier
+input int              InpRecoveryTimeoutDays = 7;                              // Recovery Timeout (days)
+input int              InpPositionTimeoutHours = 48;                            // Position Timeout (hours)
 
 //--- Dashboard Settings
 input string           InpDashboard        = "=== DASHBOARD ===";             // ----
@@ -322,7 +324,7 @@ void OnTick()
       return; // Spread too wide for new entries
 
    //--- Check if market is open for trading
-   if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_FULL)
+   if(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_FULL)
       return;
 
    //--- Evaluate new trade signal
@@ -663,8 +665,8 @@ void CheckPositionTimeout()
       datetime entry_time = (datetime)g_position.Time();
       long seconds_open = (long)(TimeCurrent() - entry_time);
 
-      //--- Close positions open > 48 hours (2 full trading days)
-      if(seconds_open > 48 * 3600)
+      //--- Close positions open longer than configured timeout
+      if(seconds_open > InpPositionTimeoutHours * 3600)
         {
          Print("TIMEOUT: Closing position Ticket=", g_position.Ticket(),
                " open for ", seconds_open / 3600, " hours");
@@ -928,6 +930,8 @@ void CheckRecoveryMode()
    double equity = g_account.Equity();
    double balance = g_account.Balance();
 
+   long recovery_timeout_sec = InpRecoveryTimeoutDays * 24 * 3600;
+
    if(g_recovery.state == RECOVERY_OFF)
      {
       //--- Check if drawdown threshold exceeded
@@ -949,10 +953,10 @@ void CheckRecoveryMode()
      }
    else if(g_recovery.state == RECOVERY_WATCHING)
      {
-      //--- Time limit: cancel recovery after 7 days
-      if(TimeCurrent() - g_recovery.recovery_start > 7 * 24 * 3600)
+      //--- Time limit: cancel recovery after configured timeout
+      if(TimeCurrent() - g_recovery.recovery_start > recovery_timeout_sec)
         {
-         Print("RECOVERY TIMEOUT: 7 days elapsed without recovery completion");
+         Print("RECOVERY TIMEOUT: ", InpRecoveryTimeoutDays, " days elapsed without recovery completion");
          g_recovery.state = RECOVERY_OFF;
          g_am_state.current_risk_pct = g_am_state.base_risk_pct;
          return;
@@ -968,9 +972,9 @@ void CheckRecoveryMode()
    else if(g_recovery.state == RECOVERY_ACTIVE)
      {
       //--- Time limit also applies to active recovery
-      if(TimeCurrent() - g_recovery.recovery_start > 7 * 24 * 3600)
+      if(TimeCurrent() - g_recovery.recovery_start > recovery_timeout_sec)
         {
-         Print("RECOVERY TIMEOUT: 7 days elapsed, reverting to normal mode");
+         Print("RECOVERY TIMEOUT: ", InpRecoveryTimeoutDays, " days elapsed, reverting to normal mode");
          g_recovery.state = RECOVERY_OFF;
          g_am_state.current_risk_pct = g_am_state.base_risk_pct;
         }
