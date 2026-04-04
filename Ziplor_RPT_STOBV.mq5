@@ -55,7 +55,7 @@ input int      StartHour = 8;                   // Start Trading Hour
 input int      EndHour = 20;                    // End Trading Hour
 
 input group "=== General Settings ==="
-input string   TradeComment = "Ziplor_RPT_STOBV"; // Trade Comment
+input string   TradeComment = "Ziplor";           // Trade Comment (prefix for order comments)
 input int      MagicNumber = 123456;            // Magic Number
 input bool     EnableLogging = true;            // Enable Detailed Logging
 
@@ -650,7 +650,7 @@ void OpenBuyPosition()
    request.tp = tp;
    request.deviation = 10;
    request.magic = MagicNumber;
-   request.comment = TradeComment;
+   request.comment = TradeComment + " BUY";
    request.type_filling = ORDER_FILLING_FOK;
 
    // Try to send order
@@ -711,7 +711,7 @@ void OpenSellPosition()
    request.tp = tp;
    request.deviation = 10;
    request.magic = MagicNumber;
-   request.comment = TradeComment;
+   request.comment = TradeComment + " SELL";
    request.type_filling = ORDER_FILLING_FOK;
 
    // Try to send order
