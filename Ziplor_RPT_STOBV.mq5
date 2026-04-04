@@ -120,7 +120,7 @@ int OnInit()
    ArraySetAsSeries(trendMA, true);
 
    // Initialize risk tracking
-dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    peakBalance = dailyStartBalance;
    lastDayChecked = 0;
 
@@ -170,7 +170,7 @@ void OnTick()
    UpdateDailyTracking();
 
    // Update peak balance for drawdown tracking
-double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    if(currentBalance > peakBalance)
       peakBalance = currentBalance;
 
@@ -439,14 +439,14 @@ double CalculatePositionSize(double stopLossPoints)
    }
 
    // Calculate risk amount in account currency
-double riskAmount = riskBaseValue * RiskPercent / 100.0;
+   double riskAmount = riskBaseValue * RiskPercent / 100.0;
 
    // Get symbol properties for lot calculation
-double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
 
    // Validate symbol properties
    if(tickValue <= 0 || tickSize <= 0 || lotStep <= 0)
@@ -458,20 +458,20 @@ double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    }
 
    // Calculate stop loss in price
-double stopLossPrice = stopLossPoints * _Point;
+   double stopLossPrice = stopLossPoints * _Point;
 
    // Calculate lot size: Risk Amount / (Stop Loss Price × (Tick Value / Tick Size))
-double lots = riskAmount / (stopLossPrice * (tickValue / tickSize));
+   double lots = riskAmount / (stopLossPrice * (tickValue / tickSize));
 
    // Normalize to lot step (floor to avoid exceeding risk)
-lots = MathFloor(lots / lotStep) * lotStep;
+   lots = MathFloor(lots / lotStep) * lotStep;
 
    // Apply broker limits
    if(lots < minLot) lots = minLot;
    if(lots > maxLot) lots = maxLot;
 
    // Final normalization
-lots = NormalizeDouble(lots, 2);
+   lots = NormalizeDouble(lots, 2);
 
    if(EnableLogging)
    {
@@ -521,7 +521,7 @@ bool CalcNormalizedOBVCross()
    // Build normalized OBV series for enough bars to compute SMA at bar[1] and bar[2]
    // We need OBV_SMA_Period + 2 normalized values (indices 1..OBV_SMA_Period+1)
    int normCount = OBV_SMA_Period + 2;
-double normOBV[];
+   double normOBV[];
    ArrayResize(normOBV, normCount);
 
    for(int i = 0; i < normCount; i++)
@@ -546,18 +546,18 @@ double normOBV[];
    }
 
    // normOBV[0] = bar[1] (current closed), normOBV[1] = bar[2], etc.
-normOBV_current = normOBV[0];
-normOBV_prev = normOBV[1];
+   normOBV_current = normOBV[0];
+   normOBV_prev = normOBV[1];
 
    // Calculate SMA of normalized OBV at bar[1] and bar[2]
-double sum1 = 0, sum2 = 0;
+   double sum1 = 0, sum2 = 0;
    for(int i = 0; i < OBV_SMA_Period; i++)
    {
       sum1 += normOBV[i];       // SMA ending at bar[1]
       sum2 += normOBV[i + 1];   // SMA ending at bar[2]
    }
-normOBV_SMA_current = sum1 / OBV_SMA_Period;
-normOBV_SMA_prev = sum2 / OBV_SMA_Period;
+   normOBV_SMA_current = sum1 / OBV_SMA_Period;
+   normOBV_SMA_prev = sum2 / OBV_SMA_Period;
 
    return true;
 }
@@ -568,7 +568,7 @@ normOBV_SMA_prev = sum2 / OBV_SMA_Period;
 bool CheckTradingConditions()
 {
    // Check spread
-double spread = (lastTick.ask - lastTick.bid) / _Point;
+   double spread = (lastTick.ask - lastTick.bid) / _Point;
    if(spread > MaxSpreadPoints)
    {
       if(EnableLogging) Print("Spread too high: ", spread, " points");
@@ -618,24 +618,24 @@ int GetTradingSignal()
       return 0;
 
    // Normalized OBV crossover detection (bar[1] vs bar[2])
-bool obvBullishCross = (normOBV_current > normOBV_SMA_current && normOBV_prev <= normOBV_SMA_prev);
-bool obvBearishCross = (normOBV_current < normOBV_SMA_current && normOBV_prev >= normOBV_SMA_prev);
+   bool obvBullishCross = (normOBV_current > normOBV_SMA_current && normOBV_prev <= normOBV_SMA_prev);
+   bool obvBearishCross = (normOBV_current < normOBV_SMA_current && normOBV_prev >= normOBV_SMA_prev);
 
    // Stochastic filter (26,3,3)
    // Either condition alone is sufficient for confirmation:
    // Buy: %K in oversold zone (momentum exhaustion) OR %K crosses above %D (bullish turn)
-bool stochBuyOK = (stochK[1] < Stoch_Oversold) ||
-                     (stochK[1] > stochD[1] && stochK[2] <= stochD[2]);
+   bool stochBuyOK = (stochK[1] < Stoch_Oversold) ||
+                        (stochK[1] > stochD[1] && stochK[2] <= stochD[2]);
    
    // Sell: %K in overbought zone (momentum exhaustion) OR %K crosses below %D (bearish turn)
-bool stochSellOK = (stochK[1] > Stoch_Overbought) ||
-                      (stochK[1] < stochD[1] && stochK[2] >= stochD[2]);
+   bool stochSellOK = (stochK[1] > Stoch_Overbought) ||
+                         (stochK[1] < stochD[1] && stochK[2] >= stochD[2]);
    
    // Trend Filter: No trade below EMA200 except for recovery trading
    // BUY trades allowed above EMA200, or below EMA200 if recovery mode is active.
    // SELL trades are never taken (long-only strategy).
-bool uptrend = true;
-bool downtrend = false; // SELL trades permanently disabled
+   bool uptrend = true;
+   bool downtrend = false; // SELL trades permanently disabled
    
    if(TradeOnlyTrend)
    {
@@ -721,7 +721,7 @@ void OpenBuyPosition(bool recovery = false)
    double tp = NormalizeDouble(ask + TakeProfitPoints * _Point, _Digits);
 
    // Calculate position size based on risk per trade
-double lots = CalculatePositionSize(StopLossPoints);
+   double lots = CalculatePositionSize(StopLossPoints);
    if(lots <= 0)
    {
       if(EnableLogging) Print("ERROR: Position size is zero! Cannot open BUY.");
@@ -782,7 +782,7 @@ void OpenSellPosition()
    double tp = NormalizeDouble(bid - TakeProfitPoints * _Point, _Digits);
 
    // Calculate position size based on risk per trade
-double lots = CalculatePositionSize(StopLossPoints);
+   double lots = CalculatePositionSize(StopLossPoints);
    if(lots <= 0)
    {
       if(EnableLogging) Print("ERROR: Position size is zero! Cannot open SELL.");
