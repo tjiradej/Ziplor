@@ -7,7 +7,6 @@
 #property link      ""
 #property version   "2.00"
 #property description "Ziplor RPT STOBV - Risk Per Trade with Stochastic OBV Strategy"
-#property strict
 
 //+------------------------------------------------------------------+
 //| Enums                                                            |
@@ -202,15 +201,15 @@ void OnTick()
    // Update recovery mode state
    UpdateRecoveryMode();
 
-   // Get signal
-   int signal = GetTradingSignal();
-
    // Manage existing positions
    ManagePositions();
 
    // Check if we can open new position
    if(!CanOpenNewPosition())
       return;
+
+   // Get signal
+   int signal = GetTradingSignal();
 
    // Execute trades based on signal
    if(signal == 1) // Buy signal
@@ -288,8 +287,7 @@ bool ValidateInputs()
    if(MinRiskReward > 0 && TakeProfitPoints / StopLossPoints < MinRiskReward)
    {
       Print("WARNING: TP/SL ratio (", NormalizeDouble(TakeProfitPoints / StopLossPoints, 2),
-            ") is below minimum R:R (", MinRiskReward, ");");
-      return false;
+            ") is below minimum R:R (", MinRiskReward, ")");
    }
 
    return true;
@@ -368,7 +366,8 @@ void UpdateRecoveryMode()
       return;
 
    // Scan recent deal history for the last closed position by this EA
-   datetime fromTime = iTime(_Symbol, PERIOD_CURRENT, RecoveryLookbackBars);
+   int lookback = MathMin(RecoveryLookbackBars, MathMax(0, Bars(_Symbol, PERIOD_CURRENT) - 1));
+   datetime fromTime = iTime(_Symbol, PERIOD_CURRENT, lookback);
    datetime toTime = TimeCurrent();
 
    if(!HistorySelect(fromTime, toTime))
@@ -533,7 +532,7 @@ bool CalcNormalizedOBVCross()
       // Find min/max of raw OBV over lookback window ending at barIdx
       double obvMin = obvBuffer[barIdx];
       double obvMax = obvBuffer[barIdx];
-      for(int j = barIdx; j < barIdx + OBV_Norm_Period; j++)
+      for(int j = barIdx; j < barIdx + OBV_Norm_Period && j < ArraySize(obvBuffer); j++)
       {
          if(obvBuffer[j] < obvMin) obvMin = obvBuffer[j];
          if(obvBuffer[j] > obvMax) obvMax = obvBuffer[j];
