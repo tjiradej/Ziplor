@@ -27,10 +27,18 @@ Choose what the risk percentage is applied to:
 
 ## Trading Strategy
 
-MA Crossover + RSI filter with optional 200 SMA trend confirmation.
+**Normalized OBV × SMA crossover** with **Stochastic (26,3,3)** confirmation and optional 200 SMA trend filter.
 
-- **Buy**: Fast EMA crosses above Slow EMA, RSI not oversold, price above trend MA
-- **Sell**: Fast EMA crosses below Slow EMA, RSI not overbought, price below trend MA
+### Signal Logic
+
+- **Buy**: Normalized OBV crosses above its SMA, confirmed by Stochastic (either %K in oversold zone or %K crossing above %D), price above trend MA
+- **Sell**: Normalized OBV crosses below its SMA, confirmed by Stochastic (either %K in overbought zone or %K crossing below %D), price below trend MA
+
+### Normalized OBV
+Raw OBV is normalized to a 0–100 scale using a rolling min/max lookback window (`OBV_Norm_Period`). A simple moving average (`OBV_SMA_Period`) is calculated on the normalized values. Crossovers between normalized OBV and its SMA generate entry signals.
+
+### Stochastic Filter
+The Stochastic oscillator (26,3,3) acts as a confirmation filter to avoid false entries. Buy signals require the stochastic to show oversold conditions or a bullish %K/%D crossover. Sell signals require overbought conditions or a bearish %K/%D crossover.
 
 ## Configuration
 
@@ -46,11 +54,13 @@ MA Crossover + RSI filter with optional 200 SMA trend confirmation.
 ### Strategy Parameters
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `FastMA_Period` | 10 | Fast EMA period |
-| `SlowMA_Period` | 30 | Slow EMA period |
-| `RSI_Period` | 14 | RSI period |
-| `RSI_Overbought` | 70.0 | RSI overbought level |
-| `RSI_Oversold` | 30.0 | RSI oversold level |
+| `OBV_SMA_Period` | 20 | SMA period for normalized OBV crossover |
+| `OBV_Norm_Period` | 50 | Lookback period for OBV min/max normalization |
+| `Stoch_K_Period` | 26 | Stochastic %K period |
+| `Stoch_D_Period` | 3 | Stochastic %D period |
+| `Stoch_Slowing` | 3 | Stochastic slowing |
+| `Stoch_Overbought` | 80.0 | Stochastic overbought level |
+| `Stoch_Oversold` | 20.0 | Stochastic oversold level |
 
 ### Position Management
 | Parameter | Default | Description |

@@ -30,11 +30,13 @@ input double         MaxDailyLossPercent = 3.0;    // Maximum Daily Loss (%)
 input double         MaxDrawdownPercent = 10.0;    // Maximum Drawdown (%)
 
 input group "=== Trading Strategy Parameters ==="
-input int      FastMA_Period = 10;              // Fast Moving Average Period
-input int      SlowMA_Period = 30;              // Slow Moving Average Period
-input int      RSI_Period = 14;                 // RSI Period
-input double   RSI_Overbought = 70.0;           // RSI Overbought Level
-input double   RSI_Oversold = 30.0;             // RSI Oversold Level
+input int      OBV_SMA_Period = 20;             // OBV SMA Period (for crossover)
+input int      OBV_Norm_Period = 50;            // OBV Normalization Lookback Period
+input int      Stoch_K_Period = 26;             // Stochastic %K Period
+input int      Stoch_D_Period = 3;              // Stochastic %D Period
+input int      Stoch_Slowing = 3;               // Stochastic Slowing
+input double   Stoch_Overbought = 80.0;         // Stochastic Overbought Level
+input double   Stoch_Oversold = 20.0;           // Stochastic Oversold Level
 
 input group "=== Position Management ==="
 input double   TakeProfitPoints = 100.0;        // Take Profit (points)
@@ -60,12 +62,18 @@ input bool     EnableLogging = true;            // Enable Detailed Logging
 //+------------------------------------------------------------------+
 //| Global Variables                                                 |
 //+------------------------------------------------------------------+
-int fastMA_handle;
-int slowMA_handle;
-int rsi_handle;
+int obv_handle;
+int stoch_handle;
 int trendMA_handle;
 
-double fastMA[], slowMA[], rsi[], trendMA[];
+// OBV and Stochastic buffers
+double obvBuffer[];
+double stochK[], stochD[];
+double trendMA[];
+
+// Normalized OBV SMA crossover state
+double normOBV_current, normOBV_prev;
+double normOBV_SMA_current, normOBV_SMA_prev;
 MqlTick lastTick;
 MqlTradeRequest request;
 MqlTradeResult result;
@@ -88,23 +96,22 @@ int OnInit()
    }
 
    // Initialize indicators
-   fastMA_handle = iMA(_Symbol, PERIOD_CURRENT, FastMA_Period, 0, MODE_EMA, PRICE_CLOSE);
-   slowMA_handle = iMA(_Symbol, PERIOD_CURRENT, SlowMA_Period, 0, MODE_EMA, PRICE_CLOSE);
-   rsi_handle = iRSI(_Symbol, PERIOD_CURRENT, RSI_Period, PRICE_CLOSE);
+   obv_handle = iOBV(_Symbol, PERIOD_CURRENT, VOLUME_TICK);
+   stoch_handle = iStochastic(_Symbol, PERIOD_CURRENT, Stoch_K_Period, Stoch_D_Period, Stoch_Slowing, MODE_SMA, STO_LOWHIGH);
    trendMA_handle = iMA(_Symbol, PERIOD_CURRENT, TrendMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
 
    // Check if indicators initialized successfully
-   if(fastMA_handle == INVALID_HANDLE || slowMA_handle == INVALID_HANDLE ||
-      rsi_handle == INVALID_HANDLE || trendMA_handle == INVALID_HANDLE)
+   if(obv_handle == INVALID_HANDLE || stoch_handle == INVALID_HANDLE ||
+      trendMA_handle == INVALID_HANDLE)
    {
       Print("ERROR: Failed to create indicator handles!");
       return(INIT_FAILED);
    }
 
    // Set array as series
-   ArraySetAsSeries(fastMA, true);
-   ArraySetAsSeries(slowMA, true);
-   ArraySetAsSeries(rsi, true);
+   ArraySetAsSeries(obvBuffer, true);
+   ArraySetAsSeries(stochK, true);
+   ArraySetAsSeries(stochD, true);
    ArraySetAsSeries(trendMA, true);
 
    // Initialize risk tracking
@@ -116,6 +123,7 @@ int OnInit()
    {
       Print("=== Ziplor EA Initialized ===");
       Print("Symbol: ", _Symbol, " | Timeframe: ", EnumToString(PERIOD_CURRENT));
+      Print("Strategy: Normalized OBV (", OBV_Norm_Period, ") x SMA(", OBV_SMA_Period, ") + Stochastic(", Stoch_K_Period, ",", Stoch_D_Period, ",", Stoch_Slowing, ")");
       Print("Risk Per Trade: ", RiskPercent, "% of ", EnumToString(RiskBase));
       Print("Max Daily Loss: ", MaxDailyLossPercent, "% | Max Drawdown: ", MaxDrawdownPercent, "%");
       Print("Stop Loss: ", StopLossPoints, " pts | Take Profit: ", TakeProfitPoints, " pts");
@@ -131,9 +139,8 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    // Release indicator handles
-   if(fastMA_handle != INVALID_HANDLE) IndicatorRelease(fastMA_handle);
-   if(slowMA_handle != INVALID_HANDLE) IndicatorRelease(slowMA_handle);
-   if(rsi_handle != INVALID_HANDLE) IndicatorRelease(rsi_handle);
+   if(obv_handle != INVALID_HANDLE) IndicatorRelease(obv_handle);
+   if(stoch_handle != INVALID_HANDLE) IndicatorRelease(stoch_handle);
    if(trendMA_handle != INVALID_HANDLE) IndicatorRelease(trendMA_handle);
 
    if(EnableLogging)
@@ -210,15 +217,27 @@ void OnTick()
 //+------------------------------------------------------------------+
 bool ValidateInputs()
 {
-   if(FastMA_Period <= 0 || SlowMA_Period <= 0 || FastMA_Period >= SlowMA_Period)
+   if(OBV_SMA_Period <= 0 || OBV_Norm_Period <= 1)
    {
-      Print("ERROR: Invalid MA periods! Fast=", FastMA_Period, " Slow=", SlowMA_Period);
+      Print("ERROR: Invalid OBV parameters! SMA_Period=", OBV_SMA_Period, " Norm_Period=", OBV_Norm_Period);
       return false;
    }
 
-   if(RSI_Period <= 0 || RSI_Overbought <= RSI_Oversold)
+   if(OBV_SMA_Period >= OBV_Norm_Period)
    {
-      Print("ERROR: Invalid RSI parameters!");
+      Print("ERROR: OBV SMA Period must be less than Normalization Period!");
+      return false;
+   }
+
+   if(Stoch_K_Period <= 0 || Stoch_D_Period <= 0 || Stoch_Slowing <= 0)
+   {
+      Print("ERROR: Invalid Stochastic parameters!");
+      return false;
+   }
+
+   if(Stoch_Overbought <= Stoch_Oversold || Stoch_Overbought > 100 || Stoch_Oversold < 0)
+   {
+      Print("ERROR: Invalid Stochastic levels!");
       return false;
    }
 
@@ -405,10 +424,72 @@ double CalculatePositionSize(double stopLossPoints)
 //+------------------------------------------------------------------+
 bool UpdateIndicators()
 {
-   if(CopyBuffer(fastMA_handle, 0, 0, 3, fastMA) <= 0) return false;
-   if(CopyBuffer(slowMA_handle, 0, 0, 3, slowMA) <= 0) return false;
-   if(CopyBuffer(rsi_handle, 0, 0, 3, rsi) <= 0) return false;
+   // Need OBV_Norm_Period + OBV_SMA_Period bars to compute normalized OBV and its SMA
+   int barsNeeded = OBV_Norm_Period + OBV_SMA_Period + 2;
+   if(CopyBuffer(obv_handle, 0, 0, barsNeeded, obvBuffer) < barsNeeded) return false;
+   if(CopyBuffer(stoch_handle, 0, 0, 3, stochK) <= 0) return false;
+   if(CopyBuffer(stoch_handle, 1, 0, 3, stochD) <= 0) return false;
    if(CopyBuffer(trendMA_handle, 0, 0, 3, trendMA) <= 0) return false;
+
+   // Calculate normalized OBV and its SMA for current and previous bars
+   if(!CalcNormalizedOBVCross())
+      return false;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate normalized OBV and its SMA crossover state             |
+//| Normalized OBV = (OBV - min) / (max - min) * 100                |
+//| Computes values for bar[1] (current closed) and bar[2] (prev)   |
+//+------------------------------------------------------------------+
+bool CalcNormalizedOBVCross()
+{
+   int totalBars = ArraySize(obvBuffer);
+   // We need at least OBV_Norm_Period + OBV_SMA_Period + 2 bars
+   if(totalBars < OBV_Norm_Period + OBV_SMA_Period + 2)
+      return false;
+
+   // Build normalized OBV series for enough bars to compute SMA at bar[1] and bar[2]
+   // We need OBV_SMA_Period + 2 normalized values (indices 1..OBV_SMA_Period+1)
+   int normCount = OBV_SMA_Period + 2;
+   double normOBV[];
+   ArrayResize(normOBV, normCount);
+
+   for(int i = 0; i < normCount; i++)
+   {
+      // bar index in the obvBuffer (which is set as series: [0]=newest)
+      int barIdx = i + 1; // start from bar[1] (last closed bar)
+
+      // Find min/max of raw OBV over lookback window ending at barIdx
+      double obvMin = obvBuffer[barIdx];
+      double obvMax = obvBuffer[barIdx];
+      for(int j = barIdx; j < barIdx + OBV_Norm_Period; j++)
+      {
+         if(obvBuffer[j] < obvMin) obvMin = obvBuffer[j];
+         if(obvBuffer[j] > obvMax) obvMax = obvBuffer[j];
+      }
+
+      double range = obvMax - obvMin;
+      if(range == 0)
+         normOBV[i] = 50.0; // flat OBV = midpoint
+      else
+         normOBV[i] = ((obvBuffer[barIdx] - obvMin) / range) * 100.0;
+   }
+
+   // normOBV[0] = bar[1] (current closed), normOBV[1] = bar[2], etc.
+   normOBV_current = normOBV[0];
+   normOBV_prev = normOBV[1];
+
+   // Calculate SMA of normalized OBV at bar[1] and bar[2]
+   double sum1 = 0, sum2 = 0;
+   for(int i = 0; i < OBV_SMA_Period; i++)
+   {
+      sum1 += normOBV[i];       // SMA ending at bar[1]
+      sum2 += normOBV[i + 1];   // SMA ending at bar[2]
+   }
+   normOBV_SMA_current = sum1 / OBV_SMA_Period;
+   normOBV_SMA_prev = sum2 / OBV_SMA_Period;
 
    return true;
 }
@@ -455,20 +536,29 @@ bool CheckTradingConditions()
 
 //+------------------------------------------------------------------+
 //| Get trading signal                                               |
+//| Buy:  Normalized OBV crosses above its SMA                       |
+//|       + Stochastic %K < Oversold (or %K crosses above %D)        |
+//| Sell: Normalized OBV crosses below its SMA                       |
+//|       + Stochastic %K > Overbought (or %K crosses below %D)      |
 //+------------------------------------------------------------------+
 int GetTradingSignal()
 {
-   // Check if we have enough data
-   if(ArraySize(fastMA) < 3 || ArraySize(slowMA) < 3 || ArraySize(rsi) < 3)
+   // Check if we have enough stochastic data
+   if(ArraySize(stochK) < 3 || ArraySize(stochD) < 3)
       return 0;
 
-   // MA Crossover detection
-   bool bullishCross = (fastMA[1] > slowMA[1] && fastMA[2] <= slowMA[2]);
-   bool bearishCross = (fastMA[1] < slowMA[1] && fastMA[2] >= slowMA[2]);
+   // Normalized OBV crossover detection (bar[1] vs bar[2])
+   bool obvBullishCross = (normOBV_current > normOBV_SMA_current && normOBV_prev <= normOBV_SMA_prev);
+   bool obvBearishCross = (normOBV_current < normOBV_SMA_current && normOBV_prev >= normOBV_SMA_prev);
 
-   // RSI Filter
-   bool rsiNotOverbought = rsi[1] < RSI_Overbought;
-   bool rsiNotOversold = rsi[1] > RSI_Oversold;
+   // Stochastic filter (26,3,3)
+   // Buy confirmation: %K is in oversold zone or %K crosses above %D
+   bool stochBuyOK = (stochK[1] < Stoch_Oversold) ||
+                     (stochK[1] > stochD[1] && stochK[2] <= stochD[2]);
+
+   // Sell confirmation: %K is in overbought zone or %K crosses below %D
+   bool stochSellOK = (stochK[1] > Stoch_Overbought) ||
+                      (stochK[1] < stochD[1] && stochK[2] >= stochD[2]);
 
    // Trend Filter
    bool uptrend = true;
@@ -480,17 +570,25 @@ int GetTradingSignal()
       downtrend = (lastTick.bid < trendMA[1]);
    }
 
-   // Buy Signal
-   if(bullishCross && rsiNotOversold && uptrend)
+   // Buy Signal: Normalized OBV crosses above SMA + Stochastic confirms
+   if(obvBullishCross && stochBuyOK && uptrend)
    {
-      if(EnableLogging) Print("BUY signal detected!");
+      if(EnableLogging)
+         Print("BUY signal! NormOBV: ", NormalizeDouble(normOBV_current, 2),
+               " > SMA: ", NormalizeDouble(normOBV_SMA_current, 2),
+               " | Stoch K: ", NormalizeDouble(stochK[1], 2),
+               " D: ", NormalizeDouble(stochD[1], 2));
       return 1;
    }
 
-   // Sell Signal
-   if(bearishCross && rsiNotOverbought && downtrend)
+   // Sell Signal: Normalized OBV crosses below SMA + Stochastic confirms
+   if(obvBearishCross && stochSellOK && downtrend)
    {
-      if(EnableLogging) Print("SELL signal detected!");
+      if(EnableLogging)
+         Print("SELL signal! NormOBV: ", NormalizeDouble(normOBV_current, 2),
+               " < SMA: ", NormalizeDouble(normOBV_SMA_current, 2),
+               " | Stoch K: ", NormalizeDouble(stochK[1], 2),
+               " D: ", NormalizeDouble(stochD[1], 2));
       return -1;
    }
 
