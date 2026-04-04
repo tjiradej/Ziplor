@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//|                                                    Ziplor_EA.mq5 |
+//|                                          Ziplor_RPT_STOBV.mq5    |
 //|                                  Copyright 2024, Ziplor Trading  |
 //|                             Risk Per Trade Position Sizing System |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Ziplor Trading"
 #property link      ""
 #property version   "2.00"
-#property description "Ziplor EA with Advanced Risk Per Trade Management"
+#property description "Ziplor RPT STOBV - Risk Per Trade with Stochastic OBV Strategy"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -55,7 +55,7 @@ input int      StartHour = 8;                   // Start Trading Hour
 input int      EndHour = 20;                    // End Trading Hour
 
 input group "=== General Settings ==="
-input string   TradeComment = "Ziplor_EA";      // Trade Comment
+input string   TradeComment = "Ziplor_RPT_STOBV"; // Trade Comment
 input int      MagicNumber = 123456;            // Magic Number
 input bool     EnableLogging = true;            // Enable Detailed Logging
 
@@ -121,7 +121,7 @@ int OnInit()
 
    if(EnableLogging)
    {
-      Print("=== Ziplor EA Initialized ===");
+      Print("=== Ziplor RPT STOBV Initialized ===");
       Print("Symbol: ", _Symbol, " | Timeframe: ", EnumToString(PERIOD_CURRENT));
       Print("Strategy: Normalized OBV (", OBV_Norm_Period, ") x SMA(", OBV_SMA_Period, ") + Stochastic(", Stoch_K_Period, ",", Stoch_D_Period, ",", Stoch_Slowing, ")");
       Print("Risk Per Trade: ", RiskPercent, "% of ", EnumToString(RiskBase));
@@ -144,7 +144,7 @@ void OnDeinit(const int reason)
    if(trendMA_handle != INVALID_HANDLE) IndicatorRelease(trendMA_handle);
 
    if(EnableLogging)
-      Print("Ziplor EA deinitialized. Reason: ", reason);
+      Print("Ziplor RPT STOBV deinitialized. Reason: ", reason);
 }
 
 //+------------------------------------------------------------------+

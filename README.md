@@ -1,4 +1,4 @@
-# Ziplor EA — Risk Per Trade
+# Ziplor RPT STOBV
 
 A MetaTrader 5 Expert Advisor with advanced **Risk Per Trade** position sizing.
 
@@ -98,7 +98,7 @@ MaxDrawdownPercent = 15.0
 
 ## Installation
 
-1. Copy `Ziplor_EA.mq5` to your MT5 `Experts` folder
+1. Copy `Ziplor_RPT_STOBV.mq5` to your MT5 `Experts` folder
 2. Compile in MetaEditor
 3. Attach to a chart and configure risk parameters
 4. Enable AutoTrading
