@@ -57,13 +57,14 @@ input int      StartHour = 8;                   // Start Trading Hour
 input int      EndHour = 20;                    // End Trading Hour
 
 input group "=== General Settings ==="
-input string   TradeComment = "Ziplor";           // Trade Comment (prefix for order comments)
 input int      MagicNumber = 123456;            // Magic Number
 input bool     EnableLogging = true;            // Enable Detailed Logging
 
 //+------------------------------------------------------------------+
 //| Global Variables                                                 |
 //+------------------------------------------------------------------+
+const string TradeComment = "Ziplor";  // Order comment prefix (not shown in inputs)
+
 int obv_handle;
 int stoch_handle;
 int trendMA_handle;
