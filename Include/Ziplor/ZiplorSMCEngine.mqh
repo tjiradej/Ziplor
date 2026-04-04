@@ -19,6 +19,8 @@ private:
    int               m_swing_lookback;      // Bars to look back for swing detection
    int               m_structure_lookback;   // Bars for structure analysis
    int               m_max_zones;            // Maximum zones to track
+   int               m_min_confluence;       // Minimum confluences for signal
+   double            m_min_risk_reward;      // Minimum risk:reward ratio
 
    //--- Internal zone arrays
    SDZone            m_demand_zones[];
@@ -46,7 +48,8 @@ public:
                     ~CSMCEngine(void);
 
    //--- Initialization
-   bool              Init(string symbol, int swing_lookback, int structure_lookback, int max_zones);
+   bool              Init(string symbol, int swing_lookback, int structure_lookback, int max_zones,
+                         int min_confluence = 4, double min_risk_reward = 2.0);
 
    //--- Core analysis functions
    MarketStructure   AnalyzeStructure(ENUM_TIMEFRAMES tf);
@@ -77,6 +80,8 @@ CSMCEngine::CSMCEngine(void)
      m_swing_lookback(5),
      m_structure_lookback(50),
      m_max_zones(20),
+     m_min_confluence(4),
+     m_min_risk_reward(2.0),
      m_demand_count(0),
      m_supply_count(0),
      m_liquidity_count(0)
@@ -93,12 +98,15 @@ CSMCEngine::~CSMCEngine(void)
 //+------------------------------------------------------------------+
 //| Initialize the engine                                            |
 //+------------------------------------------------------------------+
-bool CSMCEngine::Init(string symbol, int swing_lookback, int structure_lookback, int max_zones)
+bool CSMCEngine::Init(string symbol, int swing_lookback, int structure_lookback, int max_zones,
+                      int min_confluence, double min_risk_reward)
   {
    m_symbol = symbol;
    m_swing_lookback = MathMax(swing_lookback, 2);
    m_structure_lookback = MathMax(structure_lookback, 20);
    m_max_zones = MathMax(max_zones, 5);
+   m_min_confluence = MathMax(min_confluence, 1);
+   m_min_risk_reward = MathMax(min_risk_reward, 1.0);
 
    ArrayResize(m_demand_zones, m_max_zones);
    ArrayResize(m_supply_zones, m_max_zones);
@@ -868,7 +876,7 @@ TradeSignal CSMCEngine::EvaluateSignal(MarketStructure &htf, MarketStructure &mt
      }
 
    //--- Choose the stronger signal
-   int min_confluence = 4; // Minimum confluences required
+   int min_confluence = m_min_confluence; // Use configured minimum
    if(bull_confluence >= min_confluence && bull_confluence > bear_confluence)
      {
       signal.direction = BIAS_BULLISH;
@@ -979,7 +987,7 @@ TradeSignal CSMCEngine::EvaluateSignal(MarketStructure &htf, MarketStructure &mt
          signal.quality = SIGNAL_LOW;
 
       //--- Only mark valid if risk:reward is acceptable
-      signal.valid = (signal.risk_reward >= 2.0 && signal.risk_reward <= 15.0);
+      signal.valid = (signal.risk_reward >= m_min_risk_reward && signal.risk_reward <= 15.0);
      }
 
    return signal;

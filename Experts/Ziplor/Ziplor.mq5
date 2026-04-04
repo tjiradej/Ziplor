@@ -189,7 +189,8 @@ int OnInit()
    g_trade.SetMarginMode();
 
    //--- Initialize SMC engine
-   if(!g_smc.Init(_Symbol, InpSwingLookback, InpStructureLookback, InpMaxZones))
+   if(!g_smc.Init(_Symbol, InpSwingLookback, InpStructureLookback, InpMaxZones,
+                  InpMinConfluence, InpMinRiskReward))
      {
       Print("ERROR: Failed to initialize SMC engine");
       return INIT_FAILED;
