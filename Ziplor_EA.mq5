@@ -424,7 +424,8 @@ double CalculatePositionSize(double stopLossPoints)
 //+------------------------------------------------------------------+
 bool UpdateIndicators()
 {
-   // Need OBV_Norm_Period + OBV_SMA_Period bars to compute normalized OBV and its SMA
+   // Need enough bars: OBV_SMA_Period + 2 normalized values starting from bar[1],
+   // each needing OBV_Norm_Period bars for min/max lookback
    int barsNeeded = OBV_Norm_Period + OBV_SMA_Period + 2;
    if(CopyBuffer(obv_handle, 0, 0, barsNeeded, obvBuffer) < barsNeeded) return false;
    if(CopyBuffer(stoch_handle, 0, 0, 3, stochK) <= 0) return false;
@@ -472,7 +473,7 @@ bool CalcNormalizedOBVCross()
 
       double range = obvMax - obvMin;
       if(range == 0)
-         normOBV[i] = 50.0; // flat OBV = midpoint
+         normOBV[i] = 50.0; // No price movement: default to midpoint of 0-100 scale
       else
          normOBV[i] = ((obvBuffer[barIdx] - obvMin) / range) * 100.0;
    }
@@ -552,11 +553,12 @@ int GetTradingSignal()
    bool obvBearishCross = (normOBV_current < normOBV_SMA_current && normOBV_prev >= normOBV_SMA_prev);
 
    // Stochastic filter (26,3,3)
-   // Buy confirmation: %K is in oversold zone or %K crosses above %D
+   // Either condition alone is sufficient for confirmation:
+   // Buy: %K in oversold zone (momentum exhaustion) OR %K crosses above %D (bullish turn)
    bool stochBuyOK = (stochK[1] < Stoch_Oversold) ||
                      (stochK[1] > stochD[1] && stochK[2] <= stochD[2]);
 
-   // Sell confirmation: %K is in overbought zone or %K crosses below %D
+   // Sell: %K in overbought zone (momentum exhaustion) OR %K crosses below %D (bearish turn)
    bool stochSellOK = (stochK[1] > Stoch_Overbought) ||
                       (stochK[1] < stochD[1] && stochK[2] >= stochD[2]);
 
