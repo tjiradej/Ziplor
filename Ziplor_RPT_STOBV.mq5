@@ -64,8 +64,8 @@ input bool     EnableLogging = true;            // Enable Detailed Logging
 //+------------------------------------------------------------------+
 const string TradeComment = "Ziplor";  // Order comment prefix (not shown in inputs)
 
-int obv_handle    = INVALID_HANDLE;
-int stoch_handle  = INVALID_HANDLE;
+int obv_handle     = INVALID_HANDLE;
+int stoch_handle   = INVALID_HANDLE;
 int trendMA_handle = INVALID_HANDLE;
 
 // OBV and Stochastic buffers
@@ -366,7 +366,7 @@ void UpdateRecoveryMode()
       return;
 
    // Scan recent deal history for the last closed position by this EA
-   int lookback = MathMin(RecoveryLookbackBars, Bars(_Symbol, PERIOD_CURRENT) - 1);
+   int lookback = MathMin(RecoveryLookbackBars, MathMax(0, Bars(_Symbol, PERIOD_CURRENT) - 1));
    datetime fromTime = iTime(_Symbol, PERIOD_CURRENT, lookback);
    datetime toTime = TimeCurrent();
 
