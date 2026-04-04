@@ -7,7 +7,6 @@
 #property link      ""
 #property version   "2.00"
 #property description "Ziplor RPT STOBV - Risk Per Trade with Stochastic OBV Strategy"
-#property strict
 
 //+------------------------------------------------------------------+
 //| Enums                                                            |
@@ -65,9 +64,9 @@ input bool     EnableLogging = true;            // Enable Detailed Logging
 //+------------------------------------------------------------------+
 const string TradeComment = "Ziplor";  // Order comment prefix (not shown in inputs)
 
-int obv_handle;
-int stoch_handle;
-int trendMA_handle;
+int obv_handle    = INVALID_HANDLE;
+int stoch_handle  = INVALID_HANDLE;
+int trendMA_handle = INVALID_HANDLE;
 
 // OBV and Stochastic buffers
 double obvBuffer[];
@@ -202,15 +201,15 @@ void OnTick()
    // Update recovery mode state
    UpdateRecoveryMode();
 
-   // Get signal
-   int signal = GetTradingSignal();
-
-   // Manage existing positions
+   // Manage existing positions first
    ManagePositions();
 
    // Check if we can open new position
    if(!CanOpenNewPosition())
       return;
+
+   // Get signal
+   int signal = GetTradingSignal();
 
    // Execute trades based on signal
    if(signal == 1) // Buy signal
@@ -288,8 +287,7 @@ bool ValidateInputs()
    if(MinRiskReward > 0 && TakeProfitPoints / StopLossPoints < MinRiskReward)
    {
       Print("WARNING: TP/SL ratio (", NormalizeDouble(TakeProfitPoints / StopLossPoints, 2),
-            ") is below minimum R:R (", MinRiskReward, ");");
-      return false;
+            ") is below minimum R:R (", MinRiskReward, ")");
    }
 
    return true;
@@ -368,7 +366,8 @@ void UpdateRecoveryMode()
       return;
 
    // Scan recent deal history for the last closed position by this EA
-   datetime fromTime = iTime(_Symbol, PERIOD_CURRENT, RecoveryLookbackBars);
+   int lookback = MathMin(RecoveryLookbackBars, Bars(_Symbol, PERIOD_CURRENT) - 1);
+   datetime fromTime = iTime(_Symbol, PERIOD_CURRENT, lookback);
    datetime toTime = TimeCurrent();
 
    if(!HistorySelect(fromTime, toTime))
@@ -386,10 +385,10 @@ void UpdateRecoveryMode()
 
       // Only consider deals for this symbol and magic number
       if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
-      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != MagicNumber) continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != (long)MagicNumber) continue;
 
       // Only consider exit deals (DEAL_ENTRY_OUT or DEAL_ENTRY_INOUT)
-      long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       if(dealEntry != DEAL_ENTRY_OUT && dealEntry != DEAL_ENTRY_INOUT) continue;
 
       lastProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
@@ -533,7 +532,7 @@ bool CalcNormalizedOBVCross()
       // Find min/max of raw OBV over lookback window ending at barIdx
       double obvMin = obvBuffer[barIdx];
       double obvMax = obvBuffer[barIdx];
-      for(int j = barIdx; j < barIdx + OBV_Norm_Period; j++)
+      for(int j = barIdx; j < barIdx + OBV_Norm_Period && j < ArraySize(obvBuffer); j++)
       {
          if(obvBuffer[j] < obvMin) obvMin = obvBuffer[j];
          if(obvBuffer[j] > obvMax) obvMax = obvBuffer[j];
@@ -702,7 +701,7 @@ bool CanOpenNewPosition()
       if(ticket <= 0) continue;
 
       if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
-         PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+         PositionGetInteger(POSITION_MAGIC) == (long)MagicNumber)
       {
          totalPositions++;
       }
@@ -847,12 +846,12 @@ void ManagePositions()
       if(ticket <= 0) continue;
 
       if(PositionGetString(POSITION_SYMBOL) != _Symbol ||
-         PositionGetInteger(POSITION_MAGIC) != MagicNumber)
+         PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber)
          continue;
 
       double positionOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentSL = PositionGetDouble(POSITION_SL);
-      long positionType = PositionGetInteger(POSITION_TYPE);
+      ENUM_POSITION_TYPE positionType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 
       double newSL = 0;
       bool modifyNeeded = false;
