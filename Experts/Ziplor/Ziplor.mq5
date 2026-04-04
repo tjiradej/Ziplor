@@ -315,7 +315,12 @@ void OnTick()
    //--- Always manage existing positions (trail SL, pyramids) regardless of spread
    ManageOpenPositions();
 
-   //--- Always check recovery mode
+   //--- Evaluate new trade signal (needed before recovery check)
+   g_current_signal = g_smc.EvaluateSignal(g_htf_structure, g_mtf_structure,
+                                             g_ltf_structure, g_exec_structure,
+                                             g_current_session);
+
+   //--- Always check recovery mode (uses current signal)
    CheckRecoveryMode();
 
    //--- Check spread - only block NEW entries, not position management
@@ -326,11 +331,6 @@ void OnTick()
    //--- Check if market is open for trading
    if(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) != SYMBOL_TRADE_MODE_FULL)
       return;
-
-   //--- Evaluate new trade signal
-   g_current_signal = g_smc.EvaluateSignal(g_htf_structure, g_mtf_structure,
-                                             g_ltf_structure, g_exec_structure,
-                                             g_current_session);
 
    //--- Execute trade if signal is valid and no base position exists
    if(g_current_signal.valid && g_current_signal.quality >= SIGNAL_LOW)
@@ -543,7 +543,7 @@ double CalculateLotSize(double entry_price, double stop_loss)
 
    lot_size = MathFloor(lot_size / lot_step) * lot_step;
    lot_size = MathMax(lot_size, MathMax(min_lot, InpMinLotSize));
-   lot_size = Math.Min(lot_size, Math.Min(max_lot, InpMaxLotSize));
+   lot_size = MathMin(lot_size, MathMin(max_lot, InpMaxLotSize));
 
    return NormalizeDouble(lot_size, 2);
   }
@@ -603,7 +603,7 @@ void ExecuteBaseEntry(const TradeSignal &signal)
             " Quality=", EnumToString(signal.quality),
             " Confluences=", signal.confluence_count,
             " RR=1:", DoubleToString(signal.risk_reward, 1),
-            " Risk%=");
+            " Risk%=", DoubleToString(g_am_state.current_risk_pct, 2));
       //--- Record pyramid base entry
       g_pyramid_count = 0;
       g_pyramids[0].ticket = ticket;
@@ -1056,23 +1056,44 @@ void UpdateDashboard()
    if(g_am_state.total_trades > 0)
       win_rate = (double)g_am_state.total_wins / g_am_state.total_trades * 100.0;
 
-   g_dashboard.Update(
-      _Symbol,
-      g_current_session,
-      g_htf_structure,
-      g_mtf_structure,
-      g_ltf_structure,
-      g_exec_structure,
-      g_current_signal,
-      g_am_state,
-      g_recovery,
-      equity,
-      balance,
-      daily_pl,
-      weekly_pl,
-      win_rate,
-      g_stat_total_trades,
-      CountOpenPositions(),
-      g_pyramid_count
-   );
+   double avg_rr = 0;
+   if(g_stat_wins > 0 && g_total_loss > 0)
+      avg_rr = g_total_profit / g_stat_wins / (g_total_loss / g_stat_losses);
+
+   //--- Build DashboardData struct
+   DashboardData dash_data;
+   dash_data.balance = balance;
+   dash_data.equity = equity;
+   dash_data.margin_used = g_account.Margin();
+   dash_data.free_margin = g_account.FreeMargin();
+   dash_data.daily_pnl = daily_pl;
+   dash_data.weekly_pnl = weekly_pl;
+   dash_data.open_positions = CountOpenPositions();
+   dash_data.total_lots = 0;
+   dash_data.floating_pnl = 0;
+   //--- Compute total lots and floating PnL from open positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(g_position.SelectByIndex(i))
+        {
+         if(g_position.Symbol() == _Symbol && g_position.Magic() == InpMagicNumber)
+           {
+            dash_data.total_lots += g_position.Volume();
+            dash_data.floating_pnl += g_position.Profit() + g_position.Swap() + g_position.Commission();
+           }
+        }
+     }
+   dash_data.htf_structure = g_htf_structure;
+   dash_data.mtf_structure = g_mtf_structure;
+   dash_data.ltf_structure = g_ltf_structure;
+   dash_data.exec_structure = g_exec_structure;
+   dash_data.current_signal = g_current_signal;
+   dash_data.am_state = g_am_state;
+   dash_data.recovery = g_recovery;
+   dash_data.current_session = g_current_session;
+   dash_data.win_rate = win_rate;
+   dash_data.avg_rr = avg_rr;
+   dash_data.total_trades = g_stat_total_trades;
+
+   g_dashboard.Update(dash_data);
   }//+------------------------------------------------------------------+
