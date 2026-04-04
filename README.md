@@ -25,23 +25,16 @@ A professional-grade EA that combines Smart Money Concepts (SMC) and ICT methodo
 ```
 Ziplor/
 ├── README.md
-├── Experts/
-│   └── Ziplor/
-│       └── Ziplor.mq5              # Main EA (entry point)
-└── Include/
+└── Experts/
     └── Ziplor/
-        ├── ZiplorEnums.mqh          # Enumerations (bias, zones, sessions, etc.)
-        ├── ZiplorStructures.mqh     # Data structures (SwingPoint, SDZone, etc.)
-        ├── ZiplorSMCEngine.mqh      # SMC/ICT analysis engine class
-        └── ZiplorDashboard.mqh      # On-chart dashboard panel class
+        └── Ziplor.mq5              # Single-file EA (all code included)
 ```
 
 ## Installation
 
 1. Copy `Experts/Ziplor/` folder into your MT5 `MQL5/Experts/` directory
-2. Copy `Include/Ziplor/` folder into your MT5 `MQL5/Include/` directory
-3. Compile `Ziplor.mq5` in MetaEditor
-4. Attach to any chart on **M1 timeframe**
+2. Compile `Ziplor.mq5` in MetaEditor
+3. Attach to any chart on **M1 timeframe**
 
 ## Configuration
 
