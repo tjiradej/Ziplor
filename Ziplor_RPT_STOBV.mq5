@@ -1,1 +1,903 @@
-//+------------------------------------------------------------------+\n//|                                          Ziplor_RPT_STOBV.mq5    |\n//|                                  Copyright 2024, Ziplor Trading  |\n//|                             Risk Per Trade Position Sizing System |\n//+------------------------------------------------------------------+\n#property copyright "Copyright 2024, Ziplor Trading"\n#property link      ""\n#property version   "2.00"\n#property description "Ziplor RPT STOBV - Risk Per Trade with Stochastic OBV Strategy"\n#property strict\n\n//+------------------------------------------------------------------+\n//| Enums                                                            |\n//+------------------------------------------------------------------+\nenum ENUM_RISK_BASE\n{\n   RISK_BASE_BALANCE = 0,   // Account Balance\n   RISK_BASE_EQUITY  = 1,   // Account Equity\n   RISK_BASE_FREE_MARGIN = 2 // Free Margin\n};\n\n//+------------------------------------------------------------------+\n//| Input Parameters                                                 |\n//+------------------------------------------------------------------+\ninput group "=== Risk Per Trade ==="\ninput double         RiskPercent = 1.0;            // Risk Per Trade (%)\ninput ENUM_RISK_BASE RiskBase = RISK_BASE_BALANCE; // Risk Calculation Base\ninput double         MaxRiskPercent = 5.0;         // Maximum Risk Per Trade (%)\ninput double         MaxDailyLossPercent = 3.0;    // Maximum Daily Loss (%)\ninput double         MaxDrawdownPercent = 10.0;    // Maximum Drawdown (%)\n\ninput group "=== Trading Strategy Parameters ==="\ninput int      OBV_SMA_Period = 20;             // OBV SMA Period (for crossover)\ninput int      OBV_Norm_Period = 50;            // OBV Normalization Lookback Period\ninput int      Stoch_K_Period = 26;             // Stochastic %K Period\ninput int      Stoch_D_Period = 3;              // Stochastic %D Period\ninput int      Stoch_Slowing = 3;               // Stochastic Slowing\ninput double   Stoch_Overbought = 80.0;         // Stochastic Overbought Level\ninput double   Stoch_Oversold = 20.0;           // Stochastic Oversold Level\n\ninput group "=== Position Management ==="\ninput double   TakeProfitPoints = 100.0;        // Take Profit (points)\ninput double   StopLossPoints = 50.0;           // Stop Loss (points)\ninput double   MaxSpreadPoints = 20.0;          // Maximum Spread (points)\ninput double   MinRiskReward = 1.5;             // Minimum Risk:Reward Ratio\ninput bool     UseTrailingStop = true;          // Use Trailing Stop\ninput double   TrailingStopPoints = 30.0;       // Trailing Stop (points)\ninput double   TrailingStepPoints = 10.0;       // Trailing Step (points)\n\ninput group "=== Trade Filtering ==="\ninput bool     TradeOnlyTrend = true;           // Trade Only in Trend\ninput int      TrendMAPeriod = 200;             // Trend MA Period\ninput bool     CheckTradingHours = false;       // Check Trading Hours\ninput int      StartHour = 8;                   // Start Trading Hour\ninput int      EndHour = 20;                    // End Trading Hour\n\ninput group "=== General Settings ==="\ninput string   TradeComment = "Ziplor";           // Trade Comment (prefix for order comments)\ninput int      MagicNumber = 123456;            // Magic Number\ninput bool     EnableLogging = true;            // Enable Detailed Logging\n\n//+------------------------------------------------------------------+\n//| Global Variables                                                 |\n//+------------------------------------------------------------------+\nint obv_handle;\nint stoch_handle;\nint trendMA_handle;\n\n// OBV and Stochastic buffers\ndouble obvBuffer[];\ndouble stochK[], stochD[];\ndouble trendMA[];\n\n// Normalized OBV SMA crossover state\ndouble normOBV_current, normOBV_prev;\ndouble normOBV_SMA_current, normOBV_SMA_prev;\nMqlTick lastTick;\nMqlTradeRequest request;\nMqlTradeResult result;\n\n// Risk tracking\ndouble dailyStartBalance;\ndouble peakBalance;\ndatetime lastDayChecked;\n\n//+------------------------------------------------------------------+\n//| Expert initialization function                                   |\n//+------------------------------------------------------------------+\nint OnInit()\n{\n   // Validate input parameters\n   if(!ValidateInputs())\n   {\n      Print("ERROR: Invalid input parameters!");\n      return(INIT_PARAMETERS_INCORRECT);\n   }\n\n   // Initialize indicators\n   obv_handle = iOBV(_Symbol, PERIOD_CURRENT, VOLUME_TICK);\n   stoch_handle = iStochastic(_Symbol, PERIOD_CURRENT, Stoch_K_Period, Stoch_D_Period, Stoch_Slowing, MODE_SMA, STO_LOWHIGH);\n   trendMA_handle = iMA(_Symbol, PERIOD_CURRENT, TrendMAPeriod, 0, MODE_SMA, PRICE_CLOSE);\n\n   // Check if indicators initialized successfully\n   if(obv_handle == INVALID_HANDLE || stoch_handle == INVALID_HANDLE ||\n      trendMA_handle == INVALID_HANDLE)\n   {\n      Print("ERROR: Failed to create indicator handles!");\n      return(INIT_FAILED);\n   }\n\n   // Set array as series\n   ArraySetAsSeries(obvBuffer, true);\n   ArraySetAsSeries(stochK, true);\n   ArraySetAsSeries(stochD, true);\n   ArraySetAsSeries(trendMA, true);\n\n   // Initialize risk tracking\ndailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);\n   peakBalance = dailyStartBalance;\n   lastDayChecked = 0;\n\n   if(EnableLogging)\n   {\n      Print("=== Ziplor RPT STOBV Initialized ===");\n      Print("Symbol: ", _Symbol, " | Timeframe: ", EnumToString(PERIOD_CURRENT));\n      Print("Strategy: Normalized OBV (", OBV_Norm_Period, ") x SMA(", OBV_SMA_Period, ") + Stochastic(", Stoch_K_Period, ",", Stoch_D_Period, ",", Stoch_Slowing, ")");\n      Print("Risk Per Trade: ", RiskPercent, "% of ", EnumToString(RiskBase));\n      Print("Max Daily Loss: ", MaxDailyLossPercent, "% | Max Drawdown: ", MaxDrawdownPercent, "%");\n      Print("Stop Loss: ", StopLossPoints, " pts | Take Profit: ", TakeProfitPoints, " pts");\n      Print("Min Risk:Reward = ", MinRiskReward);\n   }\n\n   return(INIT_SUCCEEDED);\n}\n\n//+------------------------------------------------------------------+\n//| Expert deinitialization function                                 |\n//+------------------------------------------------------------------+\nv void OnDeinit(const int reason)\n{\n   // Release indicator handles\n   if(obv_handle != INVALID_HANDLE) IndicatorRelease(obv_handle);\n   if(stoch_handle != INVALID_HANDLE) IndicatorRelease(stoch_handle);\n   if(trendMA_handle != INVALID_HANDLE) IndicatorRelease(trendMA_handle);\n\n   if(EnableLogging)\n      Print("Ziplor RPT STOBV deinitialized. Reason: ", reason);\n}\n\n//+------------------------------------------------------------------+\n//| Expert tick function                                             |\n//+------------------------------------------------------------------+\nv void OnTick()\n{\n   // Get current tick\n   if(!SymbolInfoTick(_Symbol, lastTick))\n   {\n      if(EnableLogging) Print("ERROR: Failed to get tick data!");\n      return;\n   }\n\n   // Update daily tracking on new day\n   UpdateDailyTracking();\n\n   // Update peak balance for drawdown tracking\ndouble currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);\n   if(currentBalance > peakBalance)\n      peakBalance = currentBalance;\n\n   // Check if new bar formed\n   static datetime lastBarTime = 0;\n   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);\n\n   if(currentBarTime == lastBarTime)\n      return; // Wait for new bar\n\n   lastBarTime = currentBarTime;\n\n   // Update indicator buffers\n   if(!UpdateIndicators())\n   {\n      if(EnableLogging) Print("ERROR: Failed to update indicators!");\n      return;\n   }\n\n   // Check trading conditions\n   if(!CheckTradingConditions())\n      return;\n\n   // Check risk limits before proceeding\n   if(!CheckRiskLimits())\n      return;\n\n   // Get signal\n   int signal = GetTradingSignal();\n\n   // Manage existing positions\n   ManagePositions();\n\n   // Check if we can open new position\n   if(!CanOpenNewPosition())\n      return;\n\n   // Execute trades based on signal\n   if(signal == 1) // Buy signal\n   {\n      OpenBuyPosition();\n   }\n   else if(signal == -1) // Sell signal\n   {\n      OpenSellPosition();\n   }\n}\n\n//+------------------------------------------------------------------+\n//| Validate input parameters                                        |\n//+------------------------------------------------------------------+\nb bool ValidateInputs()\n{\n   if(OBV_SMA_Period <= 0 || OBV_Norm_Period <= 1)\n   {\n      Print("ERROR: Invalid OBV parameters! SMA_Period=", OBV_SMA_Period, " Norm_Period=", OBV_Norm_Period);\n      return false;\n   }\n\n   if(OBV_SMA_Period >= OBV_Norm_Period)\n   {\n      Print("ERROR: OBV SMA Period must be less than Normalization Period!");\n      return false;\n   }\n\n   if(Stoch_K_Period <= 0 || Stoch_D_Period <= 0 || Stoch_Slowing <= 0)\n   {\n      Print("ERROR: Invalid Stochastic parameters!");\n      return false;\n   }\n\n   if(Stoch_Overbought <= Stoch_Oversold || Stoch_Overbought > 100 || Stoch_Oversold < 0)\n   {\n      Print("ERROR: Invalid Stochastic levels!");\n      return false;\n   }\n\n   if(RiskPercent <= 0 || RiskPercent > MaxRiskPercent)\n   {\n      Print("ERROR: RiskPercent must be between 0 and ", MaxRiskPercent, "!");\n      return false;\n   }\n\n   if(MaxRiskPercent <= 0 || MaxRiskPercent > 10)\n   {\n      Print("ERROR: MaxRiskPercent must be between 0 and 10!");\n      return false;\n   }\n\n   if(MaxDailyLossPercent <= 0 || MaxDailyLossPercent > 50)\n   {\n      Print("ERROR: MaxDailyLossPercent must be between 0 and 50!");\n      return false;\n   }\n\n   if(MaxDrawdownPercent <= 0 || MaxDrawdownPercent > 50)\n   {\n      Print("ERROR: MaxDrawdownPercent must be between 0 and 50!");\n      return false;\n   }\n\n   if(StopLossPoints <= 0 || TakeProfitPoints <= 0)\n   {\n      Print("ERROR: Invalid SL/TP values!");\n      return false;\n   }\n\n   if(MinRiskReward > 0 && TakeProfitPoints / StopLossPoints < MinRiskReward)\n   {\n      Print("WARNING: TP/SL ratio (", NormalizeDouble(TakeProfitPoints / StopLossPoints, 2),\n            ") is below minimum R:R (", MinRiskReward, ");");\n      return false;\n   }\n\n   return true;\n}\n\n//+------------------------------------------------------------------+\n//| Update daily P&L tracking                                        |\n//+------------------------------------------------------------------+\nb void UpdateDailyTracking()\n{\n   MqlDateTime dt;\n   TimeCurrent(dt);\n   datetime today = StringToTime(IntegerToString(dt.year) + "." +\n                                 IntegerToString(dt.mon) + "." +\n                                 IntegerToString(dt.day));\n\n   if(today != lastDayChecked)\n   {\n      dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);\n      lastDayChecked = today;\n\n      if(EnableLogging)\n         Print("New trading day. Starting balance: ", dailyStartBalance);\n   }\n}\n\n//+------------------------------------------------------------------+\n//| Check risk limits (daily loss, drawdown)                         |\n//+------------------------------------------------------------------+\nb bool CheckRiskLimits()\n{\n   double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);\n   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);\n\n   // Check daily loss limit\n   double dailyLoss = dailyStartBalance - currentBalance;\n   double dailyLossPercent = 0;\n   if(dailyStartBalance > 0)\n      dailyLossPercent = (dailyLoss / dailyStartBalance) * 100.0;\n\n   if(dailyLossPercent >= MaxDailyLossPercent)\n   {\n      if(EnableLogging)\n         Print("RISK LIMIT: Daily loss limit reached! Loss: ",\n               NormalizeDouble(dailyLossPercent, 2), "% (Max: ", MaxDailyLossPercent, "%)");\n      return false;\n   }\n\n   // Check maximum drawdown from peak balance\n   double drawdown = peakBalance - currentEquity;\n   double drawdownPercent = 0;\n   if(peakBalance > 0)\n      drawdownPercent = (drawdown / peakBalance) * 100.0;\n\n   if(drawdownPercent >= MaxDrawdownPercent)\n   {\n      if(EnableLogging)\n         Print("RISK LIMIT: Maximum drawdown reached! DD: ",\n               NormalizeDouble(drawdownPercent, 2), "% (Max: ", MaxDrawdownPercent, "%)");\n      return false;\n   }\n\n   return true;\n}\n\n//+------------------------------------------------------------------+\n//| Get the account value for risk calculation                       |\n//+------------------------------------------------------------------+\nd double GetRiskBaseValue()\n{\n   switch(RiskBase)\n   {\n      case RISK_BASE_EQUITY: \n         return AccountInfoDouble(ACCOUNT_EQUITY);\n      case RISK_BASE_FREE_MARGIN:\n         return AccountInfoDouble(ACCOUNT_MARGIN_FREE);\n      default: // RISK_BASE_BALANCE\n         return AccountInfoDouble(ACCOUNT_BALANCE);\n   }\n}\n\n//+------------------------------------------------------------------+\n//| Calculate position size based on risk per trade                  |\n//+------------------------------------------------------------------+\nd double CalculatePositionSize(double stopLossPoints)\n{\n   // Get risk base value (balance, equity, or free margin)\n   double riskBaseValue = GetRiskBaseValue();\n\n   if(riskBaseValue <= 0)\n   {\n      if(EnableLogging) Print("ERROR: Risk base value is zero or negative!");\n      return 0;\n   }\n\n   // Calculate risk amount in account currency\ndouble riskAmount = riskBaseValue * RiskPercent / 100.0;\n\n   // Get symbol properties for lot calculation\ndouble tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);\ndouble tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);\ndouble lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);\ndouble minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);\ndouble maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);\n\n   // Validate symbol properties\n   if(tickValue <= 0 || tickSize <= 0 || lotStep <= 0)\n   {\n      if(EnableLogging)\n         Print("ERROR: Invalid symbol properties! TickValue=", tickValue,\n               " TickSize=", tickSize, " LotStep=", lotStep);\n      return 0;\n   }\n\n   // Calculate stop loss in price\ndouble stopLossPrice = stopLossPoints * _Point;\n\n   // Calculate lot size: Risk Amount / (Stop Loss Price × (Tick Value / Tick Size))\ndouble lots = riskAmount / (stopLossPrice * (tickValue / tickSize));\n\n   // Normalize to lot step (floor to avoid exceeding risk)\nlots = MathFloor(lots / lotStep) * lotStep;\n\n   // Apply broker limits\n   if(lots < minLot) lots = minLot;\n   if(lots > maxLot) lots = maxLot;\n\n   // Final normalization\nlots = NormalizeDouble(lots, 2);\n\n   if(EnableLogging)\n   {\n      Print("--- Position Size Calculation ---");\n      Print("  Risk Base (", EnumToString(RiskBase), "): ", NormalizeDouble(riskBaseValue, 2));\n      Print("  Risk Amount: ", NormalizeDouble(riskAmount, 2), " (", RiskPercent, "%);");\n      Print("  Stop Loss: ", stopLossPoints, " points (", NormalizeDouble(stopLossPrice, _Digits), " price);");\n      Print("  Tick Value: ", tickValue, " | Tick Size: ", tickSize);\n      Print("  Calculated Lots: ", lots);\n   }\n\n   return lots;\n}\n\n//+------------------------------------------------------------------+\n//| Update indicator buffers                                         |\n//+------------------------------------------------------------------+\nd bool UpdateIndicators()\n{\n   // Need enough bars: OBV_SMA_Period + 2 normalized values starting from bar[1],\n   // each needing OBV_Norm_Period bars for min/max lookback\n   int barsNeeded = OBV_Norm_Period + OBV_SMA_Period + 2;\n   if(CopyBuffer(obv_handle, 0, 0, barsNeeded, obvBuffer) < barsNeeded) return false;\n   if(CopyBuffer(stoch_handle, 0, 0, 3, stochK) <= 0) return false;\n   if(CopyBuffer(stoch_handle, 1, 0, 3, stochD) <= 0) return false;\n   if(CopyBuffer(trendMA_handle, 0, 0, 3, trendMA) <= 0) return false;\n\n   // Calculate normalized OBV and its SMA for current and previous bars\n   if(!CalcNormalizedOBVCross())\n      return false;\n\n   return true;\n}\n\n//+------------------------------------------------------------------+\n//| Calculate normalized OBV and its SMA crossover state             |\n//| Normalized OBV = (OBV - min) / (max - min) * 100                |\n//| Computes values for bar[1] (current closed) and bar[2] (prev)   |\n//+------------------------------------------------------------------+\nb bool CalcNormalizedOBVCross()\n{\n   int totalBars = ArraySize(obvBuffer);\n   // We need at least OBV_Norm_Period + OBV_SMA_Period + 2 bars\n   if(totalBars < OBV_Norm_Period + OBV_SMA_Period + 2)\n      return false;\n\n   // Build normalized OBV series for enough bars to compute SMA at bar[1] and bar[2]\n   // We need OBV_SMA_Period + 2 normalized values (indices 1..OBV_SMA_Period+1)\n   int normCount = OBV_SMA_Period + 2;\ndouble normOBV[];\n   ArrayResize(normOBV, normCount);\n\n   for(int i = 0; i < normCount; i++)\n   {\n      // bar index in the obvBuffer (which is set as series: [0]=newest)\n      int barIdx = i + 1; // start from bar[1] (last closed bar)\n\n      // Find min/max of raw OBV over lookback window ending at barIdx\n      double obvMin = obvBuffer[barIdx];\n      double obvMax = obvBuffer[barIdx];\n      for(int j = barIdx; j < barIdx + OBV_Norm_Period; j++)\n      {\n         if(obvBuffer[j] < obvMin) obvMin = obvBuffer[j];\n         if(obvBuffer[j] > obvMax) obvMax = obvBuffer[j];\n      }\n\n      double range = obvMax - obvMin;\n      if(range == 0)\n         normOBV[i] = 50.0; // No price movement: default to midpoint of 0-100 scale\n      else\n         normOBV[i] = ((obvBuffer[barIdx] - obvMin) / range) * 100.0;\n   }\n\n   // normOBV[0] = bar[1] (current closed), normOBV[1] = bar[2], etc.\nnormOBV_current = normOBV[0];\nnormOBV_prev = normOBV[1];\n\n   // Calculate SMA of normalized OBV at bar[1] and bar[2]\ndouble sum1 = 0, sum2 = 0;\n   for(int i = 0; i < OBV_SMA_Period; i++)\n   {\n      sum1 += normOBV[i];       // SMA ending at bar[1]\n      sum2 += normOBV[i + 1];   // SMA ending at bar[2]\n   }\nnormOBV_SMA_current = sum1 / OBV_SMA_Period;\nnormOBV_SMA_prev = sum2 / OBV_SMA_Period;\n\n   return true;\n}\n\n//+------------------------------------------------------------------+\n//| Check trading conditions                                         |\n//+------------------------------------------------------------------+\nb bool CheckTradingConditions()\n{\n   // Check spread\ndouble spread = (lastTick.ask - lastTick.bid) / _Point;\n   if(spread > MaxSpreadPoints)\n   {\n      if(EnableLogging) Print("Spread too high: ", spread, " points");\n      return false;\n   }\n\n   // Check trading hours\n   if(CheckTradingHours)\n   {\n      MqlDateTime dt;\n      TimeCurrent(dt);\n      if(dt.hour < StartHour || dt.hour >= EndHour)\n      {\n         return false;\n      }\n   }\n\n   // Check if account allows trading\n   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))\n   {\n      if(EnableLogging) Print("Trading not allowed in terminal!");\n      return false;\n   }\n\n   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))\n   {\n      if(EnableLogging) Print("Automated trading is forbidden!");\n      return false;\n   }\n\n   return true;\n}\n\n//+------------------------------------------------------------------+\n//| Get trading signal                                               |\n//| Buy:  Normalized OBV crosses above its SMA                       |\n//|       + Stochastic %K < Oversold (or %K crosses above %D)        |\n//|       + Price above EMA200 (no trade below EMA200)               |\n//| Sell: Normalized OBV crosses below its SMA                       |\n//|       + Stochastic %K > Overbought (or %K crosses below %D)      |\n//|       + Price above EMA200 only (SELL disabled — no trade below   |\n//|         EMA200, and no SELL trades in this strategy)             |\n//+------------------------------------------------------------------+\nint GetTradingSignal()\n{\n   // Check if we have enough stochastic data\n   if(ArraySize(stochK) < 3 || ArraySize(stochD) < 3)\n      return 0;\n\n   // Normalized OBV crossover detection (bar[1] vs bar[2])\nbool obvBullishCross = (normOBV_current > normOBV_SMA_current && normOBV_prev <= normOBV_SMA_prev);\nbool obvBearishCross = (normOBV_current < normOBV_SMA_current && normOBV_prev >= normOBV_SMA_prev);\n\n   // Stochastic filter (26,3,3)\n   // Either condition alone is sufficient for confirmation:\n   // Buy: %K in oversold zone (momentum exhaustion) OR %K crosses above %D (bullish turn)\nbool stochBuyOK = (stochK[1] < Stoch_Oversold) ||\n                     (stochK[1] > stochD[1] && stochK[2] <= stochD[2]);\n   \n   // Sell: %K in overbought zone (momentum exhaustion) OR %K crosses below %D (bearish turn)\nbool stochSellOK = (stochK[1] > Stoch_Overbought) ||\n                      (stochK[1] < stochD[1] && stochK[2] >= stochD[2]);\n   \n   // Trend Filter: No trade below EMA200\n   // Only BUY trades are allowed, and only when price is above EMA200.\n   // SELL trades are never taken (no trade below EMA200 — long-only strategy).\nbool uptrend = true;\nbool downtrend = false; // SELL trades permanently disabled\n   \n   if(TradeOnlyTrend)\n   {\n      bool aboveEMA200 = (lastTick.bid > trendMA[1]);\n      uptrend = aboveEMA200;    // BUY only when price is above EMA200\n      downtrend = false;        // SELL trades are never allowed (no trade below EMA200)\n      if(!aboveEMA200 && EnableLogging)\n         Print("FILTER: Price below EMA200 (", NormalizeDouble(trendMA[1], _Digits),\n               "). No trades allowed.");\n   }\n\n   // Buy Signal: Normalized OBV crosses above SMA + Stochastic confirms + above EMA200\n   if(obvBullishCross && stochBuyOK && uptrend)\n   {\n      if(EnableLogging)\n         Print("BUY signal! NormOBV: ", NormalizeDouble(normOBV_current, 2),\n               " > SMA: ", NormalizeDouble(normOBV_SMA_current, 2),\n               " | Stoch K: ", NormalizeDouble(stochK[1], 2),\n               " D: ", NormalizeDouble(stochD[1], 2));\n      return 1;\n   }\n\n   // Sell Signal: disabled — no trade below EMA200 (long-only above EMA200)\n   if(obvBearishCross && stochSellOK && downtrend)\n   {\n      if(EnableLogging)\n         Print("SELL signal! NormOBV: ", NormalizeDouble(normOBV_current, 2),\n               " < SMA: ", NormalizeDouble(normOBV_SMA_current, 2),\n               " | Stoch K: ", NormalizeDouble(stochK[1], 2),\n               " D: ", NormalizeDouble(stochD[1], 2));\n      return -1;\n   }\n\n   return 0;\n}\n\n//+------------------------------------------------------------------+\n//| Check if can open new position                                   |\n//+------------------------------------------------------------------+\nbool CanOpenNewPosition()\n{\n   int totalPositions = 0;\n\n   for(int i = PositionsTotal() - 1; i >= 0; i--)\n   {\n      ulong ticket = PositionGetTicket(i);\n      if(ticket <= 0) continue;\n\n      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&\n         PositionGetInteger(POSITION_MAGIC) == MagicNumber)\n      {\n         totalPositions++;\n      }\n   }\n\n   // Allow only one position at a time per symbol\n   return (totalPositions == 0);\n}\n\n//+------------------------------------------------------------------+\n//| Open Buy Position                                                |\n//+------------------------------------------------------------------+\nvoid OpenBuyPosition()\n{\n   double ask = lastTick.ask;\n   double sl = NormalizeDouble(ask - StopLossPoints * _Point, _Digits);\n   double tp = NormalizeDouble(ask + TakeProfitPoints * _Point, _Digits);\n\n   // Calculate position size based on risk per trade\ndouble lots = CalculatePositionSize(StopLossPoints);\n   if(lots <= 0)\n   {\n      if(EnableLogging) Print("ERROR: Position size is zero! Cannot open BUY.");\n      return;\n   }\n\n   // Prepare request\n   ZeroMemory(request);\n   ZeroMemory(result);\n\n   request.action = TRADE_ACTION_DEAL;\n   request.symbol = _Symbol;\n   request.volume = lots;\n   request.type = ORDER_TYPE_BUY;\n   request.price = ask;\n   request.sl = sl;\n   request.tp = tp;\n   request.deviation = 10;\n   request.magic = MagicNumber;\n   request.comment = TradeComment + " BUY";\n   request.type_filling = ORDER_FILLING_FOK;\n\n   // Try to send order\n   if(!OrderSend(request, result))\n   {\n      request.type_filling = ORDER_FILLING_IOC;\n      if(!OrderSend(request, result))\n      {\n         if(EnableLogging)\n            Print("ERROR: Failed to open BUY position! Error: ", GetLastError(),\n                  " Retcode: ", result.retcode);\n         return;\n      }\n   }\n\n   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)\n   {\n      if(EnableLogging)\n         Print("BUY position opened! Ticket: ", result.order,\n               " Volume: ", lots, " Price: ", ask,\n               " SL: ", sl, " TP: ", tp,\n               " Risk: ", RiskPercent, "% of ", EnumToString(RiskBase));\n   }\n   else\n   {\n      if(EnableLogging)\n         Print("ERROR: Order failed! Retcode: ", result.retcode);\n   }\n}\n\n//+------------------------------------------------------------------+\n//| Open Sell Position                                               |\n//+------------------------------------------------------------------+\nvoid OpenSellPosition()\n{\n   double bid = lastTick.bid;\n   double sl = NormalizeDouble(bid + StopLossPoints * _Point, _Digits);\n   double tp = NormalizeDouble(bid - TakeProfitPoints * _Point, _Digits);\n\n   // Calculate position size based on risk per trade\ndouble lots = CalculatePositionSize(StopLossPoints);\n   if(lots <= 0)\n   {\n      if(EnableLogging) Print("ERROR: Position size is zero! Cannot open SELL.");\n      return;\n   }\n\n   // Prepare request\n   ZeroMemory(request);\n   ZeroMemory(result);\n\n   request.action = TRADE_ACTION_DEAL;\n   request.symbol = _Symbol;\n   request.volume = lots;\n   request.type = ORDER_TYPE_SELL;\n   request.price = bid;\n   request.sl = sl;\n   request.tp = tp;\n   request.deviation = 10;\n   request.magic = MagicNumber;\n   request.comment = TradeComment + " SELL";\n   request.type_filling = ORDER_FILLING_FOK;\n\n   // Try to send order\n   if(!OrderSend(request, result))\n   {\n      request.type_filling = ORDER_FILLING_IOC;\n      if(!OrderSend(request, result))\n      {\n         if(EnableLogging)\n            Print("ERROR: Failed to open SELL position! Error: ", GetLastError(),\n                  " Retcode: ", result.retcode);\n         return;\n      }\n   }\n\n   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)\n   {\n      if(EnableLogging)\n         Print("SELL position opened! Ticket: ", result.order,\n               " Volume: ", lots, " Price: ", bid,\n               " SL: ", sl, " TP: ", tp,\n               " Risk: ", RiskPercent, "% of ", EnumToString(RiskBase));\n   }\n   else\n   {\n      if(EnableLogging)\n         Print("ERROR: Order failed! Retcode: ", result.retcode);\n   }\n}\n\n//+------------------------------------------------------------------+\n//| Manage existing positions (Trailing Stop)                        |\n//+------------------------------------------------------------------+\nvoid ManagePositions()\n{\n   if(!UseTrailingStop) return;\n\n   for(int i = PositionsTotal() - 1; i >= 0; i--)\n   {\n      ulong ticket = PositionGetTicket(i);\n      if(ticket <= 0) continue;\n\n      if(PositionGetString(POSITION_SYMBOL) != _Symbol ||\n         PositionGetInteger(POSITION_MAGIC) != MagicNumber)\n         continue;\n\n      double positionOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);\n      double currentSL = PositionGetDouble(POSITION_SL);\n      long positionType = PositionGetInteger(POSITION_TYPE);\n\n      double newSL = 0;\n      bool modifyNeeded = false;\n\n      if(positionType == POSITION_TYPE_BUY)\n      {\n         double trailPrice = lastTick.bid - TrailingStopPoints * _Point;\n         if(trailPrice > currentSL + TrailingStepPoints * _Point && trailPrice > positionOpenPrice)\n         {\n            newSL = trailPrice;\n            modifyNeeded = true;\n         }\n      }\n      else if(positionType == POSITION_TYPE_SELL)\n      {\n         double trailPrice = lastTick.ask + TrailingStopPoints * _Point;\n         if((currentSL == 0 || trailPrice < currentSL - TrailingStepPoints * _Point) &&\n            trailPrice < positionOpenPrice)\n         {\n            newSL = trailPrice;\n            modifyNeeded = true;\n         }\n      }\n\n      if(modifyNeeded)\n      {\n         ZeroMemory(request);\n         ZeroMemory(result);\n\n         request.action = TRADE_ACTION_SLTP;\n         request.symbol = _Symbol;\n         request.position = ticket;\n         request.sl = NormalizeDouble(newSL, _Digits);\n         request.tp = PositionGetDouble(POSITION_TP);\n\n         if(OrderSend(request, result))\n         {\n            if(EnableLogging)\n               Print("Trailing stop updated for ticket: ", ticket, " New SL: ", newSL);\n         }\n         else\n         {\n            if(EnableLogging)\n               Print("ERROR: Failed to update trailing stop! Error: ", GetLastError());\n         }\n      }\n   }\n}\n//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//|                                          Ziplor_RPT_STOBV.mq5    |
+//|                                  Copyright 2024, Ziplor Trading  |
+//|                             Risk Per Trade Position Sizing System |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2024, Ziplor Trading"
+#property link      ""
+#property version   "2.00"
+#property description "Ziplor RPT STOBV - Risk Per Trade with Stochastic OBV Strategy"
+#property strict
+
+//+------------------------------------------------------------------+
+//| Enums                                                            |
+//+------------------------------------------------------------------+
+enum ENUM_RISK_BASE
+{
+   RISK_BASE_BALANCE = 0,   // Account Balance
+   RISK_BASE_EQUITY  = 1,   // Account Equity
+   RISK_BASE_FREE_MARGIN = 2 // Free Margin
+};
+
+//+------------------------------------------------------------------+
+//| Input Parameters                                                 |
+//+------------------------------------------------------------------+
+input group "=== Risk Per Trade ==="
+input double         RiskPercent = 1.0;            // Risk Per Trade (%)
+input ENUM_RISK_BASE RiskBase = RISK_BASE_BALANCE; // Risk Calculation Base
+input double         MaxRiskPercent = 5.0;         // Maximum Risk Per Trade (%)
+input double         MaxDailyLossPercent = 3.0;    // Maximum Daily Loss (%)
+input double         MaxDrawdownPercent = 10.0;    // Maximum Drawdown (%)
+
+input group "=== Trading Strategy Parameters ==="
+input int      OBV_SMA_Period = 20;             // OBV SMA Period (for crossover)
+input int      OBV_Norm_Period = 50;            // OBV Normalization Lookback Period
+input int      Stoch_K_Period = 26;             // Stochastic %K Period
+input int      Stoch_D_Period = 3;              // Stochastic %D Period
+input int      Stoch_Slowing = 3;               // Stochastic Slowing
+input double   Stoch_Overbought = 80.0;         // Stochastic Overbought Level
+input double   Stoch_Oversold = 20.0;           // Stochastic Oversold Level
+
+input group "=== Position Management ==="
+input double   TakeProfitPoints = 100.0;        // Take Profit (points)
+input double   StopLossPoints = 50.0;           // Stop Loss (points)
+input double   MaxSpreadPoints = 20.0;          // Maximum Spread (points)
+input double   MinRiskReward = 1.5;             // Minimum Risk:Reward Ratio
+input bool     UseTrailingStop = true;          // Use Trailing Stop
+input double   TrailingStopPoints = 30.0;       // Trailing Stop (points)
+input double   TrailingStepPoints = 10.0;       // Trailing Step (points)
+
+input group "=== Trade Filtering ==="
+input bool     TradeOnlyTrend = true;           // Trade Only in Trend
+input int      TrendMAPeriod = 200;             // Trend MA Period
+input bool     EnableRecoveryTrading = true;    // Allow Recovery Trading Below EMA200
+input int      RecoveryLookbackBars = 50;       // Recovery Lookback (bars to check last loss)
+input bool     CheckTradingHours = false;       // Check Trading Hours
+input int      StartHour = 8;                   // Start Trading Hour
+input int      EndHour = 20;                    // End Trading Hour
+
+input group "=== General Settings ==="
+input string   TradeComment = "Ziplor";           // Trade Comment (prefix for order comments)
+input int      MagicNumber = 123456;            // Magic Number
+input bool     EnableLogging = true;            // Enable Detailed Logging
+
+//+------------------------------------------------------------------+
+//| Global Variables                                                 |
+//+------------------------------------------------------------------+
+int obv_handle;
+int stoch_handle;
+int trendMA_handle;
+
+// OBV and Stochastic buffers
+double obvBuffer[];
+double stochK[], stochD[];
+double trendMA[];
+
+// Normalized OBV SMA crossover state
+double normOBV_current, normOBV_prev;
+double normOBV_SMA_current, normOBV_SMA_prev;
+MqlTick lastTick;
+MqlTradeRequest request;
+MqlTradeResult result;
+
+// Risk tracking
+double dailyStartBalance;
+double peakBalance;
+datetime lastDayChecked;
+
+// Recovery trading state
+bool isRecoveryMode = false;
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   // Validate input parameters
+   if(!ValidateInputs())
+   {
+      Print("ERROR: Invalid input parameters!");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+
+   // Initialize indicators
+   obv_handle = iOBV(_Symbol, PERIOD_CURRENT, VOLUME_TICK);
+   stoch_handle = iStochastic(_Symbol, PERIOD_CURRENT, Stoch_K_Period, Stoch_D_Period, Stoch_Slowing, MODE_SMA, STO_LOWHIGH);
+   trendMA_handle = iMA(_Symbol, PERIOD_CURRENT, TrendMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
+
+   // Check if indicators initialized successfully
+   if(obv_handle == INVALID_HANDLE || stoch_handle == INVALID_HANDLE ||
+      trendMA_handle == INVALID_HANDLE)
+   {
+      Print("ERROR: Failed to create indicator handles!");
+      return(INIT_FAILED);
+   }
+
+   // Set array as series
+   ArraySetAsSeries(obvBuffer, true);
+   ArraySetAsSeries(stochK, true);
+   ArraySetAsSeries(stochD, true);
+   ArraySetAsSeries(trendMA, true);
+
+   // Initialize risk tracking
+dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   peakBalance = dailyStartBalance;
+   lastDayChecked = 0;
+
+   if(EnableLogging)
+   {
+      Print("=== Ziplor RPT STOBV Initialized ===");
+      Print("Symbol: ", _Symbol, " | Timeframe: ", EnumToString(PERIOD_CURRENT));
+      Print("Strategy: Normalized OBV (", OBV_Norm_Period, ") x SMA(", OBV_SMA_Period, ") + Stochastic(", Stoch_K_Period, ",", Stoch_D_Period, ",", Stoch_Slowing, ")");
+      Print("Risk Per Trade: ", RiskPercent, "% of ", EnumToString(RiskBase));
+      Print("Max Daily Loss: ", MaxDailyLossPercent, "% | Max Drawdown: ", MaxDrawdownPercent, "%");
+      Print("Stop Loss: ", StopLossPoints, " pts | Take Profit: ", TakeProfitPoints, " pts");
+      Print("Min Risk:Reward = ", MinRiskReward);
+      Print("Recovery Trading: ", EnableRecoveryTrading ? "Enabled" : "Disabled",
+            " | Lookback: ", RecoveryLookbackBars, " bars");
+   }
+
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   // Release indicator handles
+   if(obv_handle != INVALID_HANDLE) IndicatorRelease(obv_handle);
+   if(stoch_handle != INVALID_HANDLE) IndicatorRelease(stoch_handle);
+   if(trendMA_handle != INVALID_HANDLE) IndicatorRelease(trendMA_handle);
+
+   if(EnableLogging)
+      Print("Ziplor RPT STOBV deinitialized. Reason: ", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Get current tick
+   if(!SymbolInfoTick(_Symbol, lastTick))
+   {
+      if(EnableLogging) Print("ERROR: Failed to get tick data!");
+      return;
+   }
+
+   // Update daily tracking on new day
+   UpdateDailyTracking();
+
+   // Update peak balance for drawdown tracking
+double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(currentBalance > peakBalance)
+      peakBalance = currentBalance;
+
+   // Check if new bar formed
+   static datetime lastBarTime = 0;
+   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+
+   if(currentBarTime == lastBarTime)
+      return; // Wait for new bar
+
+   lastBarTime = currentBarTime;
+
+   // Update indicator buffers
+   if(!UpdateIndicators())
+   {
+      if(EnableLogging) Print("ERROR: Failed to update indicators!");
+      return;
+   }
+
+   // Check trading conditions
+   if(!CheckTradingConditions())
+      return;
+
+   // Check risk limits before proceeding
+   if(!CheckRiskLimits())
+      return;
+
+   // Update recovery mode state
+   UpdateRecoveryMode();
+
+   // Get signal
+   int signal = GetTradingSignal();
+
+   // Manage existing positions
+   ManagePositions();
+
+   // Check if we can open new position
+   if(!CanOpenNewPosition())
+      return;
+
+   // Execute trades based on signal
+   if(signal == 1) // Buy signal
+   {
+      if(isRecoveryMode)
+         OpenBuyPosition(true);  // Recovery trade
+      else
+         OpenBuyPosition(false); // Normal trade
+   }
+   else if(signal == -1) // Sell signal
+   {
+      OpenSellPosition();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Validate input parameters                                        |
+//+------------------------------------------------------------------+
+bool ValidateInputs()
+{
+   if(OBV_SMA_Period <= 0 || OBV_Norm_Period <= 1)
+   {
+      Print("ERROR: Invalid OBV parameters! SMA_Period=", OBV_SMA_Period, " Norm_Period=", OBV_Norm_Period);
+      return false;
+   }
+
+   if(OBV_SMA_Period >= OBV_Norm_Period)
+   {
+      Print("ERROR: OBV SMA Period must be less than Normalization Period!");
+      return false;
+   }
+
+   if(Stoch_K_Period <= 0 || Stoch_D_Period <= 0 || Stoch_Slowing <= 0)
+   {
+      Print("ERROR: Invalid Stochastic parameters!");
+      return false;
+   }
+
+   if(Stoch_Overbought <= Stoch_Oversold || Stoch_Overbought > 100 || Stoch_Oversold < 0)
+   {
+      Print("ERROR: Invalid Stochastic levels!");
+      return false;
+   }
+
+   if(RiskPercent <= 0 || RiskPercent > MaxRiskPercent)
+   {
+      Print("ERROR: RiskPercent must be between 0 and ", MaxRiskPercent, "!");
+      return false;
+   }
+
+   if(MaxRiskPercent <= 0 || MaxRiskPercent > 10)
+   {
+      Print("ERROR: MaxRiskPercent must be between 0 and 10!");
+      return false;
+   }
+
+   if(MaxDailyLossPercent <= 0 || MaxDailyLossPercent > 50)
+   {
+      Print("ERROR: MaxDailyLossPercent must be between 0 and 50!");
+      return false;
+   }
+
+   if(MaxDrawdownPercent <= 0 || MaxDrawdownPercent > 50)
+   {
+      Print("ERROR: MaxDrawdownPercent must be between 0 and 50!");
+      return false;
+   }
+
+   if(StopLossPoints <= 0 || TakeProfitPoints <= 0)
+   {
+      Print("ERROR: Invalid SL/TP values!");
+      return false;
+   }
+
+   if(MinRiskReward > 0 && TakeProfitPoints / StopLossPoints < MinRiskReward)
+   {
+      Print("WARNING: TP/SL ratio (", NormalizeDouble(TakeProfitPoints / StopLossPoints, 2),
+            ") is below minimum R:R (", MinRiskReward, ");");
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Update daily P&L tracking                                        |
+//+------------------------------------------------------------------+
+void UpdateDailyTracking()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   datetime today = StringToTime(IntegerToString(dt.year) + "." +
+                                 IntegerToString(dt.mon) + "." +
+                                 IntegerToString(dt.day));
+
+   if(today != lastDayChecked)
+   {
+      dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      lastDayChecked = today;
+
+      if(EnableLogging)
+         Print("New trading day. Starting balance: ", dailyStartBalance);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check risk limits (daily loss, drawdown)                         |
+//+------------------------------------------------------------------+
+bool CheckRiskLimits()
+{
+   double currentBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+
+   // Check daily loss limit
+   double dailyLoss = dailyStartBalance - currentBalance;
+   double dailyLossPercent = 0;
+   if(dailyStartBalance > 0)
+      dailyLossPercent = (dailyLoss / dailyStartBalance) * 100.0;
+
+   if(dailyLossPercent >= MaxDailyLossPercent)
+   {
+      if(EnableLogging)
+         Print("RISK LIMIT: Daily loss limit reached! Loss: ",
+               NormalizeDouble(dailyLossPercent, 2), "% (Max: ", MaxDailyLossPercent, "%)");
+      return false;
+   }
+
+   // Check maximum drawdown from peak balance
+   double drawdown = peakBalance - currentEquity;
+   double drawdownPercent = 0;
+   if(peakBalance > 0)
+      drawdownPercent = (drawdown / peakBalance) * 100.0;
+
+   if(drawdownPercent >= MaxDrawdownPercent)
+   {
+      if(EnableLogging)
+         Print("RISK LIMIT: Maximum drawdown reached! DD: ",
+               NormalizeDouble(drawdownPercent, 2), "% (Max: ", MaxDrawdownPercent, "%)");
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Update recovery mode state                                       |
+//| Recovery mode activates when the last closed position for this    |
+//| EA was a loss, allowing a BUY trade below EMA200 to recover.     |
+//+------------------------------------------------------------------+
+void UpdateRecoveryMode()
+{
+   isRecoveryMode = false;
+
+   if(!EnableRecoveryTrading)
+      return;
+
+   // Scan recent deal history for the last closed position by this EA
+   datetime fromTime = iTime(_Symbol, PERIOD_CURRENT, RecoveryLookbackBars);
+   datetime toTime = TimeCurrent();
+
+   if(!HistorySelect(fromTime, toTime))
+      return;
+
+   int totalDeals = HistoryDealsTotal();
+   double lastProfit = 0;
+   bool foundDeal = false;
+
+   // Iterate backwards to find the most recent exit deal for this EA
+   for(int i = totalDeals - 1; i >= 0; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket <= 0) continue;
+
+      // Only consider deals for this symbol and magic number
+      if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != MagicNumber) continue;
+
+      // Only consider exit deals (DEAL_ENTRY_OUT or DEAL_ENTRY_INOUT)
+      long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(dealEntry != DEAL_ENTRY_OUT && dealEntry != DEAL_ENTRY_INOUT) continue;
+
+      lastProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                 + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                 + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      foundDeal = true;
+      break;
+   }
+
+   if(foundDeal && lastProfit < 0)
+   {
+      isRecoveryMode = true;
+      if(EnableLogging)
+         Print("RECOVERY MODE: Last trade was a loss (",
+               NormalizeDouble(lastProfit, 2),
+               "). Recovery trading below EMA200 allowed.");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get the account value for risk calculation                       |
+//+------------------------------------------------------------------+
+double GetRiskBaseValue()
+{
+   switch(RiskBase)
+   {
+      case RISK_BASE_EQUITY: 
+         return AccountInfoDouble(ACCOUNT_EQUITY);
+      case RISK_BASE_FREE_MARGIN:
+         return AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      default: // RISK_BASE_BALANCE
+         return AccountInfoDouble(ACCOUNT_BALANCE);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate position size based on risk per trade                  |
+//+------------------------------------------------------------------+
+double CalculatePositionSize(double stopLossPoints)
+{
+   // Get risk base value (balance, equity, or free margin)
+   double riskBaseValue = GetRiskBaseValue();
+
+   if(riskBaseValue <= 0)
+   {
+      if(EnableLogging) Print("ERROR: Risk base value is zero or negative!");
+      return 0;
+   }
+
+   // Calculate risk amount in account currency
+double riskAmount = riskBaseValue * RiskPercent / 100.0;
+
+   // Get symbol properties for lot calculation
+double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+
+   // Validate symbol properties
+   if(tickValue <= 0 || tickSize <= 0 || lotStep <= 0)
+   {
+      if(EnableLogging)
+         Print("ERROR: Invalid symbol properties! TickValue=", tickValue,
+               " TickSize=", tickSize, " LotStep=", lotStep);
+      return 0;
+   }
+
+   // Calculate stop loss in price
+double stopLossPrice = stopLossPoints * _Point;
+
+   // Calculate lot size: Risk Amount / (Stop Loss Price × (Tick Value / Tick Size))
+double lots = riskAmount / (stopLossPrice * (tickValue / tickSize));
+
+   // Normalize to lot step (floor to avoid exceeding risk)
+lots = MathFloor(lots / lotStep) * lotStep;
+
+   // Apply broker limits
+   if(lots < minLot) lots = minLot;
+   if(lots > maxLot) lots = maxLot;
+
+   // Final normalization
+lots = NormalizeDouble(lots, 2);
+
+   if(EnableLogging)
+   {
+      Print("--- Position Size Calculation ---");
+      Print("  Risk Base (", EnumToString(RiskBase), "): ", NormalizeDouble(riskBaseValue, 2));
+      Print("  Risk Amount: ", NormalizeDouble(riskAmount, 2), " (", RiskPercent, "%);");
+      Print("  Stop Loss: ", stopLossPoints, " points (", NormalizeDouble(stopLossPrice, _Digits), " price);");
+      Print("  Tick Value: ", tickValue, " | Tick Size: ", tickSize);
+      Print("  Calculated Lots: ", lots);
+   }
+
+   return lots;
+}
+
+//+------------------------------------------------------------------+
+//| Update indicator buffers                                         |
+//+------------------------------------------------------------------+
+bool UpdateIndicators()
+{
+   // Need enough bars: OBV_SMA_Period + 2 normalized values starting from bar[1],
+   // each needing OBV_Norm_Period bars for min/max lookback
+   int barsNeeded = OBV_Norm_Period + OBV_SMA_Period + 2;
+   if(CopyBuffer(obv_handle, 0, 0, barsNeeded, obvBuffer) < barsNeeded) return false;
+   if(CopyBuffer(stoch_handle, 0, 0, 3, stochK) <= 0) return false;
+   if(CopyBuffer(stoch_handle, 1, 0, 3, stochD) <= 0) return false;
+   if(CopyBuffer(trendMA_handle, 0, 0, 3, trendMA) <= 0) return false;
+
+   // Calculate normalized OBV and its SMA for current and previous bars
+   if(!CalcNormalizedOBVCross())
+      return false;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate normalized OBV and its SMA crossover state             |
+//| Normalized OBV = (OBV - min) / (max - min) * 100                |
+//| Computes values for bar[1] (current closed) and bar[2] (prev)   |
+//+------------------------------------------------------------------+
+bool CalcNormalizedOBVCross()
+{
+   int totalBars = ArraySize(obvBuffer);
+   // We need at least OBV_Norm_Period + OBV_SMA_Period + 2 bars
+   if(totalBars < OBV_Norm_Period + OBV_SMA_Period + 2)
+      return false;
+
+   // Build normalized OBV series for enough bars to compute SMA at bar[1] and bar[2]
+   // We need OBV_SMA_Period + 2 normalized values (indices 1..OBV_SMA_Period+1)
+   int normCount = OBV_SMA_Period + 2;
+double normOBV[];
+   ArrayResize(normOBV, normCount);
+
+   for(int i = 0; i < normCount; i++)
+   {
+      // bar index in the obvBuffer (which is set as series: [0]=newest)
+      int barIdx = i + 1; // start from bar[1] (last closed bar)
+
+      // Find min/max of raw OBV over lookback window ending at barIdx
+      double obvMin = obvBuffer[barIdx];
+      double obvMax = obvBuffer[barIdx];
+      for(int j = barIdx; j < barIdx + OBV_Norm_Period; j++)
+      {
+         if(obvBuffer[j] < obvMin) obvMin = obvBuffer[j];
+         if(obvBuffer[j] > obvMax) obvMax = obvBuffer[j];
+      }
+
+      double range = obvMax - obvMin;
+      if(range == 0)
+         normOBV[i] = 50.0; // No price movement: default to midpoint of 0-100 scale
+      else
+         normOBV[i] = ((obvBuffer[barIdx] - obvMin) / range) * 100.0;
+   }
+
+   // normOBV[0] = bar[1] (current closed), normOBV[1] = bar[2], etc.
+normOBV_current = normOBV[0];
+normOBV_prev = normOBV[1];
+
+   // Calculate SMA of normalized OBV at bar[1] and bar[2]
+double sum1 = 0, sum2 = 0;
+   for(int i = 0; i < OBV_SMA_Period; i++)
+   {
+      sum1 += normOBV[i];       // SMA ending at bar[1]
+      sum2 += normOBV[i + 1];   // SMA ending at bar[2]
+   }
+normOBV_SMA_current = sum1 / OBV_SMA_Period;
+normOBV_SMA_prev = sum2 / OBV_SMA_Period;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check trading conditions                                         |
+//+------------------------------------------------------------------+
+bool CheckTradingConditions()
+{
+   // Check spread
+double spread = (lastTick.ask - lastTick.bid) / _Point;
+   if(spread > MaxSpreadPoints)
+   {
+      if(EnableLogging) Print("Spread too high: ", spread, " points");
+      return false;
+   }
+
+   // Check trading hours
+   if(CheckTradingHours)
+   {
+      MqlDateTime dt;
+      TimeCurrent(dt);
+      if(dt.hour < StartHour || dt.hour >= EndHour)
+      {
+         return false;
+      }
+   }
+
+   // Check if account allows trading
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+   {
+      if(EnableLogging) Print("Trading not allowed in terminal!");
+      return false;
+   }
+
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+   {
+      if(EnableLogging) Print("Automated trading is forbidden!");
+      return false;
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Get trading signal                                               |
+//| Buy:  Normalized OBV crosses above its SMA                       |
+//|       + Stochastic %K < Oversold (or %K crosses above %D)        |
+//|       + Price above EMA200 (or recovery mode active)             |
+//| Sell: Normalized OBV crosses below its SMA                       |
+//|       + Stochastic %K > Overbought (or %K crosses below %D)      |
+//|       + SELL disabled (long-only strategy)                       |
+//+------------------------------------------------------------------+
+int GetTradingSignal()
+{
+   // Check if we have enough stochastic data
+   if(ArraySize(stochK) < 3 || ArraySize(stochD) < 3)
+      return 0;
+
+   // Normalized OBV crossover detection (bar[1] vs bar[2])
+bool obvBullishCross = (normOBV_current > normOBV_SMA_current && normOBV_prev <= normOBV_SMA_prev);
+bool obvBearishCross = (normOBV_current < normOBV_SMA_current && normOBV_prev >= normOBV_SMA_prev);
+
+   // Stochastic filter (26,3,3)
+   // Either condition alone is sufficient for confirmation:
+   // Buy: %K in oversold zone (momentum exhaustion) OR %K crosses above %D (bullish turn)
+bool stochBuyOK = (stochK[1] < Stoch_Oversold) ||
+                     (stochK[1] > stochD[1] && stochK[2] <= stochD[2]);
+   
+   // Sell: %K in overbought zone (momentum exhaustion) OR %K crosses below %D (bearish turn)
+bool stochSellOK = (stochK[1] > Stoch_Overbought) ||
+                      (stochK[1] < stochD[1] && stochK[2] >= stochD[2]);
+   
+   // Trend Filter: No trade below EMA200 except for recovery trading
+   // BUY trades allowed above EMA200, or below EMA200 if recovery mode is active.
+   // SELL trades are never taken (long-only strategy).
+bool uptrend = true;
+bool downtrend = false; // SELL trades permanently disabled
+   
+   if(TradeOnlyTrend)
+   {
+      bool aboveEMA200 = (lastTick.bid > trendMA[1]);
+      if(aboveEMA200)
+      {
+         uptrend = true;
+      }
+      else if(isRecoveryMode)
+      {
+         // Allow BUY below EMA200 for recovery trading
+         uptrend = true;
+         if(EnableLogging)
+            Print("RECOVERY: Price below EMA200 (", NormalizeDouble(trendMA[1], _Digits),
+                  ") but recovery trading allowed.");
+      }
+      else
+      {
+         uptrend = false;
+         if(EnableLogging)
+            Print("FILTER: Price below EMA200 (", NormalizeDouble(trendMA[1], _Digits),
+                  "). No trades allowed (recovery not active).");
+      }
+      downtrend = false;  // SELL trades are never allowed
+   }
+
+   // Buy Signal: Normalized OBV crosses above SMA + Stochastic confirms + trend/recovery OK
+   if(obvBullishCross && stochBuyOK && uptrend)
+   {
+      if(EnableLogging)
+         Print(isRecoveryMode && lastTick.bid <= trendMA[1] ? "RECOVERY BUY" : "BUY",
+               " signal! NormOBV: ", NormalizeDouble(normOBV_current, 2),
+               " > SMA: ", NormalizeDouble(normOBV_SMA_current, 2),
+               " | Stoch K: ", NormalizeDouble(stochK[1], 2),
+               " D: ", NormalizeDouble(stochD[1], 2));
+      return 1;
+   }
+
+   // Sell Signal: disabled (long-only strategy)
+   if(obvBearishCross && stochSellOK && downtrend)
+   {
+      if(EnableLogging)
+         Print("SELL signal! NormOBV: ", NormalizeDouble(normOBV_current, 2),
+               " < SMA: ", NormalizeDouble(normOBV_SMA_current, 2),
+               " | Stoch K: ", NormalizeDouble(stochK[1], 2),
+               " D: ", NormalizeDouble(stochD[1], 2));
+      return -1;
+   }
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Check if can open new position                                   |
+//+------------------------------------------------------------------+
+bool CanOpenNewPosition()
+{
+   int totalPositions = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+         PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+      {
+         totalPositions++;
+      }
+   }
+
+   // Allow only one position at a time per symbol
+   return (totalPositions == 0);
+}
+
+//+------------------------------------------------------------------+
+//| Open Buy Position                                                |
+//+------------------------------------------------------------------+
+void OpenBuyPosition(bool recovery = false)
+{
+   double ask = lastTick.ask;
+   double sl = NormalizeDouble(ask - StopLossPoints * _Point, _Digits);
+   double tp = NormalizeDouble(ask + TakeProfitPoints * _Point, _Digits);
+
+   // Calculate position size based on risk per trade
+double lots = CalculatePositionSize(StopLossPoints);
+   if(lots <= 0)
+   {
+      if(EnableLogging) Print("ERROR: Position size is zero! Cannot open BUY.");
+      return;
+   }
+
+   // Prepare request
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = lots;
+   request.type = ORDER_TYPE_BUY;
+   request.price = ask;
+   request.sl = sl;
+   request.tp = tp;
+   request.deviation = 10;
+   request.magic = MagicNumber;
+   request.comment = recovery ? TradeComment + " RECOVERY BUY" : TradeComment + " BUY";
+   request.type_filling = ORDER_FILLING_FOK;
+
+   // Try to send order
+   if(!OrderSend(request, result))
+   {
+      request.type_filling = ORDER_FILLING_IOC;
+      if(!OrderSend(request, result))
+      {
+         if(EnableLogging)
+            Print("ERROR: Failed to open BUY position! Error: ", GetLastError(),
+                  " Retcode: ", result.retcode);
+         return;
+      }
+   }
+
+   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+   {
+      if(EnableLogging)
+         Print(recovery ? "RECOVERY BUY" : "BUY", " position opened! Ticket: ", result.order,
+               " Volume: ", lots, " Price: ", ask,
+               " SL: ", sl, " TP: ", tp,
+               " Risk: ", RiskPercent, "% of ", EnumToString(RiskBase));
+   }
+   else
+   {
+      if(EnableLogging)
+         Print("ERROR: Order failed! Retcode: ", result.retcode);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Open Sell Position                                               |
+//+------------------------------------------------------------------+
+void OpenSellPosition()
+{
+   double bid = lastTick.bid;
+   double sl = NormalizeDouble(bid + StopLossPoints * _Point, _Digits);
+   double tp = NormalizeDouble(bid - TakeProfitPoints * _Point, _Digits);
+
+   // Calculate position size based on risk per trade
+double lots = CalculatePositionSize(StopLossPoints);
+   if(lots <= 0)
+   {
+      if(EnableLogging) Print("ERROR: Position size is zero! Cannot open SELL.");
+      return;
+   }
+
+   // Prepare request
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = _Symbol;
+   request.volume = lots;
+   request.type = ORDER_TYPE_SELL;
+   request.price = bid;
+   request.sl = sl;
+   request.tp = tp;
+   request.deviation = 10;
+   request.magic = MagicNumber;
+   request.comment = TradeComment + " SELL";
+   request.type_filling = ORDER_FILLING_FOK;
+
+   // Try to send order
+   if(!OrderSend(request, result))
+   {
+      request.type_filling = ORDER_FILLING_IOC;
+      if(!OrderSend(request, result))
+      {
+         if(EnableLogging)
+            Print("ERROR: Failed to open SELL position! Error: ", GetLastError(),
+                  " Retcode: ", result.retcode);
+         return;
+      }
+   }
+
+   if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+   {
+      if(EnableLogging)
+         Print("SELL position opened! Ticket: ", result.order,
+               " Volume: ", lots, " Price: ", bid,
+               " SL: ", sl, " TP: ", tp,
+               " Risk: ", RiskPercent, "% of ", EnumToString(RiskBase));
+   }
+   else
+   {
+      if(EnableLogging)
+         Print("ERROR: Order failed! Retcode: ", result.retcode);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Manage existing positions (Trailing Stop)                        |
+//+------------------------------------------------------------------+
+void ManagePositions()
+{
+   if(!UseTrailingStop) return;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol ||
+         PositionGetInteger(POSITION_MAGIC) != MagicNumber)
+         continue;
+
+      double positionOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      long positionType = PositionGetInteger(POSITION_TYPE);
+
+      double newSL = 0;
+      bool modifyNeeded = false;
+
+      if(positionType == POSITION_TYPE_BUY)
+      {
+         double trailPrice = lastTick.bid - TrailingStopPoints * _Point;
+         if(trailPrice > currentSL + TrailingStepPoints * _Point && trailPrice > positionOpenPrice)
+         {
+            newSL = trailPrice;
+            modifyNeeded = true;
+         }
+      }
+      else if(positionType == POSITION_TYPE_SELL)
+      {
+         double trailPrice = lastTick.ask + TrailingStopPoints * _Point;
+         if((currentSL == 0 || trailPrice < currentSL - TrailingStepPoints * _Point) &&
+            trailPrice < positionOpenPrice)
+         {
+            newSL = trailPrice;
+            modifyNeeded = true;
+         }
+      }
+
+      if(modifyNeeded)
+      {
+         ZeroMemory(request);
+         ZeroMemory(result);
+
+         request.action = TRADE_ACTION_SLTP;
+         request.symbol = _Symbol;
+         request.position = ticket;
+         request.sl = NormalizeDouble(newSL, _Digits);
+         request.tp = PositionGetDouble(POSITION_TP);
+
+         if(OrderSend(request, result))
+         {
+            if(EnableLogging)
+               Print("Trailing stop updated for ticket: ", ticket, " New SL: ", newSL);
+         }
+         else
+         {
+            if(EnableLogging)
+               Print("ERROR: Failed to update trailing stop! Error: ", GetLastError());
+         }
+      }
+   }
+}
+//+------------------------------------------------------------------+
