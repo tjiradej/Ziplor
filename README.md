@@ -95,7 +95,7 @@ MaxDrawdownPercent = 15.0
 
 ## How Position Size is Calculated
 
-Example with $10,000 balance, 1% risk, 50-point stop loss on EURUSD:
+Example with $10,000 balance, 1% risk, 50-point stop loss on EURUSD (standard lot, 5-digit broker):
 
 1. **Risk Amount** = $10,000 × 1% = $100
 2. **Stop Loss Price** = 50 × 0.00001 = 0.0005
